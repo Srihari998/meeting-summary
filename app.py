@@ -6,7 +6,7 @@ Pipeline:
 1. Upload Video/Audio (MP4, MKV, MOV, AVI, MP3, WAV, M4A, etc.)
 2. File Validation (Stream check, size check, format check)
 3. Audio Processing via ffmpeg -> 16kHz mono WAV
-4. Whisper Speech-to-Text Transcription
+4. Whisper Speech-to-Text Transcription (Cached model)
 5. Clean Context-Aware Summary:
    - Executive Overview
    - Discussion Topics & Points
@@ -37,6 +37,12 @@ st.set_page_config(
 # ── Saved Transcripts Directory ────────────────────────────────────────────────
 TRANSCRIPT_DIR = Path(__file__).parent / "transcripts"
 TRANSCRIPT_DIR.mkdir(exist_ok=True)
+
+# ── Model Caching (Prevents reloading weights on every run) ────────────────────
+@st.cache_resource
+def get_transcriber(model_name: str) -> Transcriber:
+    """Cache the loaded Whisper model instance across runs."""
+    return Transcriber(model_name=model_name)
 
 # ── Modern, Clean Styling ──────────────────────────────────────────────────────
 st.markdown(
@@ -180,19 +186,24 @@ uploaded_file = st.file_uploader(
     help="Supports all common video and audio formats up to 500 MB.",
 )
 
-# ── WER Helper ─────────────────────────────────────────────────────────────────
+# ── WER Helper (Uses jiwer for efficient industry-standard calculation) ────────
 def calculate_wer(ref: str, hyp: str) -> float:
-    r, h = ref.lower().split(), hyp.lower().split()
-    n, m = len(r), len(h)
-    if n == 0:
-        return 0.0 if m == 0 else 1.0
-    dp = [[0] * (m + 1) for _ in range(n + 1)]
-    for i in range(n + 1): dp[i][0] = i
-    for j in range(m + 1): dp[0][j] = j
-    for i in range(1, n + 1):
-        for j in range(1, m + 1):
-            dp[i][j] = dp[i - 1][j - 1] if r[i - 1] == h[j - 1] else 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
-    return dp[n][m] / n
+    """Calculate Word Error Rate (WER) using jiwer with graceful fallback."""
+    try:
+        import jiwer
+        return float(jiwer.wer(ref, hyp))
+    except Exception:
+        r, h = ref.lower().split(), hyp.lower().split()
+        n, m = len(r), len(h)
+        if n == 0:
+            return 0.0 if m == 0 else 1.0
+        dp = [[0] * (m + 1) for _ in range(n + 1)]
+        for i in range(n + 1): dp[i][0] = i
+        for j in range(m + 1): dp[0][j] = j
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                dp[i][j] = dp[i - 1][j - 1] if r[i - 1] == h[j - 1] else 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+        return dp[n][m] / n
 
 
 # ── File Uploaded & Processing Flow ────────────────────────────────────────────
@@ -228,6 +239,7 @@ if uploaded_file is not None:
     if st.button("🔄 Generate Meeting Summary", type="primary"):
         tmp_input = None
         tmp_wav = None
+        has_speech = False
         try:
             # 1. Save uploaded file to temp
             suffix = Path(uploaded_file.name).suffix or ".tmp"
@@ -240,56 +252,57 @@ if uploaded_file is not None:
                 processor = AudioProcessor()
                 tmp_wav = processor.process(tmp_input)
 
-            # 3. Whisper Speech-to-Text
+            # 3. Whisper Speech-to-Text (using cached model)
             with st.spinner(f"🤖 Transcribing with Whisper ({model_name} model)..."):
-                transcriber = Transcriber(model_name=model_name)
+                transcriber = get_transcriber(model_name)
                 result = transcriber.transcribe(tmp_wav)
 
             transcript_text = result.get("text", "").strip()
             segments = result.get("segments", [])
             language = result.get("language", "en")
+            has_speech = bool(transcript_text)
 
-            if not transcript_text:
-                st.error("❌ No speech detected in the recording. Please check the audio track.")
-                st.stop()
+            if not has_speech:
+                st.error("❌ No speech detected in the recording. Please check the audio track or recording volume.")
 
-            # 4. Context-Aware Meeting Summarization
-            with st.spinner("✨ Analyzing discussion topics & generating executive summary..."):
-                summarizer = MeetingSummarizer()
-                summary = summarizer.summarize(transcript_text)
+            if has_speech:
+                # 4. Context-Aware Meeting Summarization
+                with st.spinner("✨ Analyzing discussion topics & generating executive summary..."):
+                    summarizer = MeetingSummarizer()
+                    summary = summarizer.summarize(transcript_text)
 
-            # 5. Display Structured Summary
-            st.markdown("---")
-            st.subheader("📋 Executive Meeting Summary")
+                # 5. Display Structured Summary
+                st.markdown("---")
+                st.subheader("📋 Executive Meeting Summary")
 
-            # ── Overview Card ──────────────────────────────────────────────────
-            st.markdown(
-                f"""
-                <div class="overview-card">
-                    <strong>🎯 Main Objective & Overview:</strong><br>
-                    {summary["overview"]}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                # ── Overview Card ──────────────────────────────────────────────
+                st.markdown(
+                    f"""
+                    <div class="overview-card">
+                        <strong>🎯 Main Objective & Overview:</strong><br>
+                        {summary["overview"]}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-            # ── Summary Tabs ───────────────────────────────────────────────────
-            tab_topics, tab_actions, tab_deadlines, tab_transcript, tab_stats = st.tabs([
-                "📑 Topics Discussed",
-                "✅ Action Items",
-                "⏰ Deadlines & Milestones",
-                "📝 Full Transcript",
-                "📊 Stats",
-            ])
+                # ── Summary Tabs ───────────────────────────────────────────────
+                tab_topics, tab_actions, tab_deadlines, tab_transcript, tab_stats = st.tabs([
+                    "📑 Topics Discussed",
+                    "✅ Action Items",
+                    "⏰ Deadlines & Milestones",
+                    "📝 Full Transcript",
+                    "📊 Stats",
+                ])
 
-            # Tab 1: Topics Discussed
-            with tab_topics:
-                if summary["topic_groups"]:
-                    for group in summary["topic_groups"]:
-                        points_html = "".join(f"<li style='margin-bottom:6px;'>{p}</li>" for p in group["points"])
-                        st.markdown(
-                            f"""
-                            <div class="topic-card">
+                # Tab 1: Topics Discussed
+                with tab_topics:
+                    if summary["topic_groups"]:
+                        for group in summary["topic_groups"]:
+                            points_html = "".join(f"<li style='margin-bottom:6px;'>{p}</li>" for p in group["points"])
+                            st.markdown(
+                                f"""
+                                <div class="topic-card">
                                 <div class="topic-header">🔹 {group['topic']}</div>
                                 <ul style="margin:0; padding-left:20px; color:#334155;">
                                     {points_html}
@@ -298,111 +311,132 @@ if uploaded_file is not None:
                             """,
                             unsafe_allow_html=True,
                         )
-                else:
-                    st.info("No specific topic clusters detected. View Full Transcript for raw discussion.")
-
-            # Tab 2: Action Items
-            with tab_actions:
-                if summary["action_items"]:
-                    for item in summary["action_items"]:
-                        st.markdown(f"<div class='action-card'>☑️ {item}</div>", unsafe_allow_html=True)
-                else:
-                    st.info("No specific action items or tasks were explicitly assigned.")
-
-            # Tab 3: Deadlines & Milestones
-            with tab_deadlines:
-                if summary["deadlines"]:
-                    for dl in summary["deadlines"]:
-                        st.markdown(f"<div class='deadline-card'>⏰ {dl}</div>", unsafe_allow_html=True)
-                else:
-                    st.info("No explicit deadlines or dates were mentioned in this recording.")
-
-            # Tab 4: Full Transcript with Timestamps
-            with tab_transcript:
-                st.text_area("Complete Transcript", value=transcript_text, height=260, label_visibility="collapsed")
-                if segments:
-                    with st.expander("🕐 Timestamped Segments"):
-                        for s in segments:
-                            st.markdown(f"**[{s.get('start', 0):.1f}s → {s.get('end', 0):.1f}s]** {s.get('text', '').strip()}")
-
-            # Tab 5: Stats & Accuracy
-            with tab_stats:
-                s = summary["stats"]
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Word Count", s["word_count"])
-                c2.metric("Sentences", s["sentence_count"])
-                c3.metric("Speaking Time", s["speaking_time"])
-                c4.metric("Language", language.upper())
-
-                if reference_text.strip():
-                    wer = calculate_wer(reference_text.strip(), transcript_text)
-                    acc = max(0.0, 1.0 - wer) * 100
-                    if acc >= 90:
-                        st.success(f"🎯 **Accuracy:** {acc:.1f}% (WER: {wer*100:.1f}%) — Meets the ≥90% threshold.")
                     else:
-                        st.warning(f"🎯 **Accuracy:** {acc:.1f}% (WER: {wer*100:.1f}%) — Try `small` or `medium` model.")
+                        st.info("No specific topic clusters detected. View Full Transcript for raw discussion.")
 
-            # ── Build Download Document ────────────────────────────────────────
-            doc_lines = [
-                "============================================================",
-                "               EXECUTIVE MEETING SUMMARY",
-                "============================================================",
-                f"File: {uploaded_file.name}",
-                f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                "",
-                "🎯 MAIN OBJECTIVE & OVERVIEW:",
-                f"  {summary['overview']}",
-                "",
-                "📑 TOPICS DISCUSSED:",
-            ]
-            for group in summary["topic_groups"]:
-                doc_lines.append(f"\n  🔹 {group['topic'].upper()}:")
-                for p in group["points"]:
-                    doc_lines.append(f"     • {p}")
+                # Tab 2: Action Items
+                with tab_actions:
+                    if summary["action_items"]:
+                        for item in summary["action_items"]:
+                            st.markdown(f"<div class='action-card'>☑️ {item}</div>", unsafe_allow_html=True)
+                    else:
+                        st.info("No specific action items or tasks were explicitly assigned.")
 
-            if summary["action_items"]:
-                doc_lines.append("\n✅ ACTION ITEMS & DELIVERABLES:")
-                for item in summary["action_items"]:
-                    doc_lines.append(f"  ☑ {item}")
+                # Tab 3: Deadlines & Milestones
+                with tab_deadlines:
+                    if summary["deadlines"]:
+                        for dl in summary["deadlines"]:
+                            st.markdown(f"<div class='deadline-card'>⏰ {dl}</div>", unsafe_allow_html=True)
+                    else:
+                        st.info("No explicit deadlines or dates were mentioned in this recording.")
 
-            if summary["deadlines"]:
-                doc_lines.append("\n⏰ DEADLINES & KEY MILESTONES:")
-                for dl in summary["deadlines"]:
-                    doc_lines.append(f"  ⏰ {dl}")
+                # Tab 4: Full Transcript with Timestamps
+                with tab_transcript:
+                    st.text_area("Complete Transcript", value=transcript_text, height=260, label_visibility="collapsed")
+                    if segments:
+                        with st.expander("🕐 Timestamped Segments"):
+                            for s in segments:
+                                st.markdown(f"**[{s.get('start', 0):.1f}s → {s.get('end', 0):.1f}s]** {s.get('text', '').strip()}")
 
-            doc_lines.extend([
-                "",
-                "============================================================",
-                "                    FULL TRANSCRIPT",
-                "============================================================",
-                transcript_text,
-            ])
-            summary_doc = "\n".join(doc_lines)
+                # Tab 5: Stats & Accuracy
+                with tab_stats:
+                    s = summary["stats"]
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Word Count", s["word_count"])
+                    c2.metric("Sentences", s["sentence_count"])
+                    c3.metric("Speaking Time", s["speaking_time"])
+                    c4.metric("Language", language.upper())
 
-            # Auto-save
-            if auto_save:
-                stem = Path(uploaded_file.name).stem
-                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                save_file = TRANSCRIPT_DIR / f"{stem}_{ts}_summary.txt"
-                save_file.write_text(summary_doc, encoding="utf-8")
+                    if reference_text.strip():
+                        wer = calculate_wer(reference_text.strip(), transcript_text)
+                        acc = max(0.0, 1.0 - wer) * 100
+                        if acc >= 90:
+                            st.success(f"🎯 **Accuracy:** {acc:.1f}% (WER: {wer*100:.1f}%) — Meets the ≥90% threshold.")
+                        else:
+                            st.warning(f"🎯 **Accuracy:** {acc:.1f}% (WER: {wer*100:.1f}%) — Try `small` or `medium` model.")
 
-            # ── Download Section ───────────────────────────────────────────────
-            st.markdown("---")
-            col_d1, col_d2 = st.columns(2)
-            with col_d1:
-                st.download_button(
-                    label="⬇️ Download Executive Summary (.txt)",
-                    data=summary_doc,
-                    file_name=f"{Path(uploaded_file.name).stem}_summary.txt",
-                    mime="text/plain",
-                )
-            with col_d2:
-                st.download_button(
-                    label="⬇️ Download Raw Transcript (.txt)",
-                    data=transcript_text,
-                    file_name=f"{Path(uploaded_file.name).stem}_raw_transcript.txt",
-                    mime="text/plain",
-                )
+                # ── Build Download Document ────────────────────────────────────
+                doc_lines = [
+                    "============================================================",
+                    "               EXECUTIVE MEETING SUMMARY",
+                    "============================================================",
+                    f"File: {uploaded_file.name}",
+                    f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    "",
+                    "🎯 MAIN OBJECTIVE & OVERVIEW:",
+                    f"  {summary['overview']}",
+                    "",
+                    "📑 TOPICS DISCUSSED:",
+                ]
+                for group in summary["topic_groups"]:
+                    doc_lines.append(f"\n  🔹 {group['topic'].upper()}:")
+                    for p in group["points"]:
+                        doc_lines.append(f"     • {p}")
+
+                if summary["action_items"]:
+                    doc_lines.append("\n✅ ACTION ITEMS & DELIVERABLES:")
+                    for item in summary["action_items"]:
+                        doc_lines.append(f"  ☑ {item}")
+
+                if summary["deadlines"]:
+                    doc_lines.append("\n⏰ DEADLINES & KEY MILESTONES:")
+                    for dl in summary["deadlines"]:
+                        doc_lines.append(f"  ⏰ {dl}")
+
+                doc_lines.extend([
+                    "",
+                    "============================================================",
+                    "                    FULL TRANSCRIPT",
+                    "============================================================",
+                    transcript_text,
+                ])
+                summary_doc = "\n".join(doc_lines)
+
+                # Auto-save both summary, raw transcript, and metadata
+                if auto_save:
+                    stem = Path(uploaded_file.name).stem
+                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    # 1. Summary Document
+                    summary_path = TRANSCRIPT_DIR / f"{stem}_{ts}_summary.txt"
+                    summary_path.write_text(summary_doc, encoding="utf-8")
+
+                    # 2. Raw Transcript
+                    raw_transcript_path = TRANSCRIPT_DIR / f"{stem}_{ts}_transcript.txt"
+                    raw_transcript_path.write_text(transcript_text, encoding="utf-8")
+
+                    # 3. Structured JSON Metadata
+                    meta_path = TRANSCRIPT_DIR / f"{stem}_{ts}_metadata.json"
+                    metadata = {
+                        "filename": uploaded_file.name,
+                        "timestamp": ts,
+                        "model": model_name,
+                        "language": language,
+                        "word_count": s["word_count"],
+                        "sentence_count": s["sentence_count"],
+                        "speaking_time": s["speaking_time"],
+                        "summary_file": summary_path.name,
+                        "transcript_file": raw_transcript_path.name,
+                    }
+                    meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+                # ── Download Section ───────────────────────────────────────────
+                st.markdown("---")
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.download_button(
+                        label="⬇️ Download Executive Summary (.txt)",
+                        data=summary_doc,
+                        file_name=f"{Path(uploaded_file.name).stem}_summary.txt",
+                        mime="text/plain",
+                    )
+                with col_d2:
+                    st.download_button(
+                        label="⬇️ Download Raw Transcript (.txt)",
+                        data=transcript_text,
+                        file_name=f"{Path(uploaded_file.name).stem}_raw_transcript.txt",
+                        mime="text/plain",
+                    )
 
         except Exception as exc:
             st.error(f"❌ Error during processing: {exc}")
