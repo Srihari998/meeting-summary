@@ -1,0 +1,4 @@
+Place audio/video recording files in this directory.
+
+Naming convention: recording_01.wav, meeting_sprint.mp4, etc.
+Each file must have a matching reference transcript in ../references/ with the same base name.

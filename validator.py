@@ -2,44 +2,40 @@
 validator.py
 Task 2 -- File Upload Validation
 
-Validates uploaded audio/video files:
-- Checks file extension is supported
-- Checks file size (not empty, not too large)
-- Uses ffprobe to confirm the file contains a valid audio/video stream
-- Returns clear, user-friendly error messages
+Validates uploaded audio/video files before entering the processing pipeline:
+- Validates file extension against allowed audio/video formats (case-insensitive).
+- Checks file size boundaries (min 1KB, max 500MB).
+- Uses ffprobe to strictly verify container integrity and presence of an audio stream.
+- Rejects non-media files disguised with media extensions.
+- Fails explicitly with helpful guidance if ffprobe is not installed on PATH.
 """
 
 from __future__ import annotations
-import subprocess
 import json
-import tempfile
 import os
+import subprocess
+import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-SUPPORTED_EXTENSIONS = {
-    ".mp4", ".mkv", ".mov", ".avi", ".webm",   # video
-    ".mp3", ".wav", ".m4a", ".ogg", ".flac",   # audio
-}
+# ── Supported Formats ─────────────────────────────────────────────────────────
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+SUPPORTED_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
-MAX_FILE_SIZE_MB = 500          # reject files larger than 500 MB
-MIN_FILE_SIZE_BYTES = 1_024     # reject files smaller than 1 KB (likely corrupt)
+MAX_FILE_SIZE_MB = 500
+MIN_FILE_SIZE_BYTES = 1_024  # 1 KB
 
 
 class ValidationError(Exception):
-    """Raised when a file fails validation."""
+    """Raised when an uploaded file fails validation checks."""
     pass
 
 
 class FileValidator:
     """
-    Validates an uploaded file before it enters the transcription pipeline.
-
-    Usage
-    -----
-    validator = FileValidator()
-    is_valid, error_msg = validator.validate_streamlit_upload(uploaded_file)
+    Performs comprehensive pre-transcription validation for media files.
     """
 
     def __init__(
@@ -57,6 +53,7 @@ class FileValidator:
     def validate_streamlit_upload(self, uploaded_file) -> tuple[bool, str]:
         """
         Validate a Streamlit UploadedFile object.
+        Memory-efficient: streams file in chunks rather than loading all at once.
 
         Returns
         -------
@@ -73,7 +70,7 @@ class FileValidator:
 
     def validate_file_path(self, path: str) -> tuple[bool, str]:
         """
-        Validate a file already on disk (used by the CLI test script).
+        Validate a media file located at a filesystem path.
 
         Returns
         -------
@@ -92,15 +89,16 @@ class FileValidator:
             return False, str(exc)
 
     # ------------------------------------------------------------------
-    # Private checks
+    # Internal Validation Steps
     # ------------------------------------------------------------------
 
     def _check_extension(self, filename: str) -> None:
+        """Verify extension is in the supported whitelist (case-insensitive)."""
         ext = Path(filename).suffix.lower()
         if not ext:
             raise ValidationError(
                 f"'{filename}' has no file extension. "
-                f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+                f"Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
             )
         if ext not in SUPPORTED_EXTENSIONS:
             raise ValidationError(
@@ -109,6 +107,7 @@ class FileValidator:
             )
 
     def _check_size(self, size_bytes: int, filename: str) -> None:
+        """Verify file meets minimum and maximum size boundaries."""
         if size_bytes < self.min_size_bytes:
             raise ValidationError(
                 f"'{filename}' is too small ({size_bytes} bytes). "
@@ -116,32 +115,42 @@ class FileValidator:
             )
         if size_bytes > self.max_size_bytes:
             size_mb = size_bytes / (1024 * 1024)
+            max_mb = self.max_size_bytes // (1024 * 1024)
             raise ValidationError(
                 f"'{filename}' is too large ({size_mb:.1f} MB). "
-                f"Maximum allowed size is {self.max_size_bytes // (1024*1024)} MB."
+                f"Maximum allowed file size is {max_mb} MB."
             )
 
     def _check_stream_via_ffprobe(self, uploaded_file) -> None:
-        """Write upload to a temp file, then run ffprobe on it."""
+        """Write stream chunk-by-chunk to temp file and validate with ffprobe."""
         suffix = Path(uploaded_file.name).suffix or ".tmp"
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=suffix, prefix="validate_"
-        ) as tmp:
-            tmp.write(uploaded_file.getvalue())
-            tmp_path = tmp.name
+        tmp_path = None
         try:
+            uploaded_file.seek(0)
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=suffix, prefix="validate_"
+            ) as tmp:
+                while chunk := uploaded_file.read(1024 * 1024):
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+
+            # Reset file pointer for subsequent application usage
+            uploaded_file.seek(0)
             self._check_stream_path(tmp_path)
         finally:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     @staticmethod
     def _check_stream_path(path: str) -> None:
         """
-        Run ffprobe to verify the file contains at least one audio stream.
-        Raises ValidationError if ffprobe cannot find an audio stream.
+        Run ffprobe to strictly inspect media streams.
+        - Fails if ffprobe is missing.
+        - Fails if ffprobe reports exit error or invalid JSON structure.
+        - Fails if no audio stream is present.
         """
         try:
             result = subprocess.run(
@@ -155,25 +164,32 @@ class FileValidator:
                 stderr=subprocess.PIPE,
             )
         except FileNotFoundError:
-            # ffprobe not available — skip deep validation, pass on extension only
-            return
+            raise ValidationError(
+                "ffprobe is not available. Please install FFmpeg and ensure "
+                "both 'ffmpeg' and 'ffprobe' are added to your system PATH."
+            )
 
         if result.returncode != 0:
             raise ValidationError(
-                "The file could not be read by ffprobe. "
-                "It may be corrupt or not a valid audio/video file."
+                "Unable to validate the media file. The file may be corrupted or unsupported."
             )
 
         try:
-            info = json.loads(result.stdout.decode("utf-8", errors="replace"))
-            streams = info.get("streams", [])
-            codec_types = [s.get("codec_type", "") for s in streams]
+            raw_json = result.stdout.decode("utf-8", errors="replace")
+            info = json.loads(raw_json)
+            streams = info.get("streams")
+            if not isinstance(streams, list) or len(streams) == 0:
+                raise ValidationError(
+                    "Unable to validate the media file. The file may be corrupted or unsupported."
+                )
+
+            codec_types = [s.get("codec_type", "") for s in streams if isinstance(s, dict)]
             if "audio" not in codec_types:
                 raise ValidationError(
                     "The file does not contain any audio stream. "
-                    "Please upload a file with audio (e.g., an actual meeting recording, "
-                    "not a silent video)."
+                    "Please upload a file with audio (e.g., an actual meeting recording, not a silent video)."
                 )
-        except (json.JSONDecodeError, KeyError):
-            # Could not parse ffprobe output — assume valid
-            pass
+        except (json.JSONDecodeError, AttributeError):
+            raise ValidationError(
+                "Unable to validate the media file. The file may be corrupted or unsupported."
+            )

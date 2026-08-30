@@ -1,43 +1,54 @@
-# 🎙️ Meeting Transcription & Executive Summary Tool
+# 🎙️ Meeting Summarizer & Transcription
 
 An AI-powered meeting transcription and summarization application built with **OpenAI Whisper**, **FFmpeg**, and **Streamlit**.
 
-It automatically extracts audio from any uploaded video or audio meeting recording, transcribes speech with high accuracy, filters out small talk/chatter, and generates a structured executive summary organized by discussion topics, action items, and deadlines.
+Uploads any meeting video or audio file, transcribes the speech using Whisper, filters out small talk, and generates a structured executive summary organized by discussion topics, action items, and deadlines.
+
+> **Casual chatter is filtered from the generated summary while the complete raw transcript is preserved.**
 
 ---
 
 ## ✨ Features
 
-- 🎬 **Universal Audio & Video Support**: Supports `MP4`, `MKV`, `MOV`, `AVI`, `WebM`, `MP3`, `WAV`, `M4A`, `OGG`, and `FLAC`.
-- 🔊 **Automatic Audio Extraction**: Uses FFmpeg to convert video and audio files into 16kHz mono WAV for optimal transcription.
-- 🤖 **Whisper Speech-to-Text with Resource Caching**: Uses `@st.cache_resource` for fast inference without reloading model weights on each run.
-- 🧹 **Small-Talk & Noise Filtering**: Automatically detects and strips casual chatter, pleasantries (*"did you have lunch"*, *"can you hear me"*), and mic checks.
+- 🎬 **Universal Audio & Video Support** — `MP4`, `MKV`, `MOV`, `AVI`, `WebM`, `MP3`, `WAV`, `M4A`, `OGG`, `FLAC` (case-insensitive).
+- 🔊 **Automatic Audio Extraction** — FFmpeg converts any input to 16 kHz mono WAV for optimal Whisper performance.
+- 🤖 **Whisper Speech-to-Text** — Powered by OpenAI Whisper (`tiny` → `large`). Model is cached for the session using `@st.cache_resource` — no redundant reloading.
+- 🧹 **Small-Talk Filtering** — Keyword-based classification removes pleasantries and mic checks from the generated summary. The raw transcript is always preserved in full.
 - 📋 **Structured Executive Summary**:
-  - 🎯 **Main Objective & Overview**: Core purpose and summary of the meeting.
-  - 📑 **Topics Discussed**: Discussion points organized under clear topic categories.
-  - ✅ **Action Items**: Explicitly assigned tasks and deliverables.
-  - ⏰ **Deadlines & Milestones**: Extracted dates, days, and submission deadlines.
-- 📊 **Validation & Accuracy Benchmarking**: Built-in file stream validation and Word Error Rate (WER) accuracy calculation via `jiwer`.
-- 💾 **Export & Auto-save**: Auto-saves transcripts (`_transcript.txt`), executive summaries (`_summary.txt`), and structured metadata JSON.
+  - 🎯 **Main Objective & Overview** — derived from highest-scoring sentences.
+  - 📑 **Topics Discussed** — keyword-based topic classification into categories (Planning, Design, Budget, Technical, Testing, Marketing).
+  - ✅ **Action Items** — sentences containing task-assignment patterns.
+  - ⏰ **Deadlines & Milestones** — sentences containing explicit deadline patterns.
+- 📊 **Validation & Accuracy Benchmarking** — WER calculation with punctuation/case/whitespace normalization via `jiwer`. Detailed substitution/deletion/insertion breakdown.
+- 💾 **Separate Auto-save** — saves `_transcript.txt` and `_summary.txt` separately to `transcripts/`.
 
 ---
 
 ## 📁 Project Structure
 
 ```text
-├── app.py                     # Streamlit web application UI (with model caching & jiwer)
-├── audio_processor.py         # FFmpeg audio conversion & extraction
-├── transcriber.py             # OpenAI Whisper model wrapper
-├── summarizer.py              # Topic clustering & executive summary generator
-├── validator.py               # File upload & audio stream validation
-├── requirements.txt           # Python package dependencies (streamlit, openai-whisper, jiwer)
+├── app.py                     # Streamlit web application
+├── audio_processor.py         # FFmpeg audio extraction & 16kHz conversion
+├── transcriber.py             # OpenAI Whisper model wrapper (lazy-loads model)
+├── summarizer.py              # Keyword-based topic classifier & executive summary builder
+├── validator.py               # File upload validation (extension, size, ffprobe stream check)
+├── accuracy.py                # WER normalization and calculation engine (uses jiwer)
+├── requirements.txt           # Python dependencies
 │
-├── run_all_tests.py           # Master Milestone 1 test runner
-├── test_task1_workflow.py     # Task 1: Complete Whisper transcription workflow test
-├── test_task2_validation.py   # Task 2: File upload validation & negative test suite
-├── test_task3_transcript.py   # Task 3: Transcript validation & auto-save integrity test
-├── test_task5_accuracy.py     # Task 5: Accuracy benchmark & batch WER evaluation
-└── README.md                  # Project documentation
+├── tests/
+│   ├── test_validator.py      # Validator test suite (68 tests)
+│   ├── test_audio_processor.py
+│   └── test_accuracy.py
+│
+├── evaluation/
+│   ├── README.md              # Evaluation instructions
+│   ├── accuracy_results.csv   # Real measured results (populated by run_evaluation.py)
+│   ├── recordings/            # Place test recordings here
+│   └── references/            # Place matching reference transcripts here
+│
+├── run_evaluation.py          # Batch accuracy evaluation script
+├── README.md                  # This file
+└── .gitignore
 ```
 
 ---
@@ -45,15 +56,18 @@ It automatically extracts audio from any uploaded video or audio meeting recordi
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
-- **Python 3.10+**
-- **FFmpeg** installed and added to your system `PATH`:
-  - **Windows**: `winget install ffmpeg`
-  - **macOS**: `brew install ffmpeg`
-  - **Linux**: `sudo apt install ffmpeg`
 
-### 2. Installation
+**Python 3.10+** and **FFmpeg** installed on your system:
 
-Clone the repository and install dependencies:
+| Platform | Install Command |
+| :------- | :-------------- |
+| Windows  | `winget install ffmpeg` |
+| macOS    | `brew install ffmpeg` |
+| Linux    | `sudo apt install ffmpeg` |
+
+Verify: `ffmpeg -version` and `ffprobe -version` must both work.
+
+### 2. Install Python Dependencies
 
 ```bash
 git clone https://github.com/Srihari998/meeting-summary.git
@@ -61,34 +75,163 @@ cd meeting-summary
 pip install -r requirements.txt
 ```
 
-### 3. Running the Web Application
-
-Launch the Streamlit dashboard:
+### 3. Run the Web Application
 
 ```bash
 streamlit run app.py
 ```
-Open your browser at `http://localhost:8501`.
+
+Open `http://localhost:8501` in your browser.
 
 ---
 
-## 🧪 Milestone 1 Test Suite & Verification Evidence
+## 🧪 Running the Test Suite
 
-All Milestone 1 tasks come with dedicated automated test scripts:
-
-| Task | Test Script | Description |
-| :--- | :--- | :--- |
-| **Task 1** | `python test_task1_workflow.py` | Tests end-to-end ffmpeg conversion $\rightarrow$ Whisper transcription $\rightarrow$ segments $\rightarrow$ language detection. |
-| **Task 2** | `python test_task2_validation.py` | Verifies rejection of 0-byte files, invalid extensions (`.pdf`, `.exe`), fake disguised media, and verifies error messages. |
-| **Task 3** | `python test_task3_transcript.py` | Verifies non-empty transcript generation, auto-saving of `_summary.txt` + `_transcript.txt` + `_metadata.json`, and verifies disk file integrity. |
-| **Task 5** | `python test_task5_accuracy.py` | Evaluates Word Error Rate (WER) using `jiwer` and verifies $\ge 90\%$ accuracy threshold. |
-
-### Run All Milestone 1 Tests at Once:
 ```bash
-python run_all_tests.py
+python -m pytest tests/ -v
 ```
 
 ---
 
+## 📊 Milestone 1 Validation
+
+### Task 1 — Whisper Transcription
+
+**Pipeline:**
+
+```
+Upload → Validate → FFmpeg (16 kHz mono WAV) → Whisper → Validate Transcript → Display
+```
+
+- `AudioProcessor.process()` uses `ffmpeg -vn -acodec pcm_s16le -ar 16000 -ac 1` to produce a clean 16 kHz mono WAV.
+- `Transcriber.transcribe()` wraps `whisper.load_model()` with lazy loading (`_model` is `None` until first call).
+- The Streamlit app caches the `Transcriber` instance with `@st.cache_resource(show_spinner=False)` keyed by model name — switching from `base` to `small` loads the correct model; repeated runs with the same model reuse it.
+- The complete pipeline status is shown step-by-step (✅ or ❌) in the UI.
+
+**Status: IMPLEMENTED**
+
+---
+
+### Task 2 — File Validation
+
+**Supported formats:**
+
+| Type   | Extensions                                     |
+| :----- | :--------------------------------------------- |
+| Video  | `mp4`, `mkv`, `mov`, `avi`, `webm` (+ uppercase) |
+| Audio  | `mp3`, `wav`, `m4a`, `ogg`, `flac` (+ uppercase) |
+
+**Rejected cases:**
+
+| Condition                          | Error                                                                 |
+| :--------------------------------- | :-------------------------------------------------------------------- |
+| Unsupported extension (`.txt`, `.pdf`, `.jpg`, …) | "Unsupported format '…'. Supported formats: …" |
+| Empty file or below 1 KB           | "… is too small (N bytes). The file may be empty or corrupt."        |
+| File larger than 500 MB            | "… is too large (N MB). Maximum allowed is 500 MB."                  |
+| Non-media renamed as `.mp4`        | ffprobe returns non-zero or empty streams → rejected                  |
+| Video with no audio stream         | "The file does not contain any audio stream."                         |
+| Corrupted/unreadable media         | "Unable to validate the media file. The file may be corrupted or unsupported." |
+| **ffprobe missing**                | **"ffprobe is not available. Please install FFmpeg…"** ← fails explicitly |
+| **Invalid ffprobe JSON output**    | **"Unable to validate the media file…"** ← rejected, not silently passed |
+
+> **Important fix:** Previous version silently passed validation when ffprobe was missing or returned invalid JSON. Both cases now fail with clear, actionable messages.
+
+**Status: IMPLEMENTED**
+
+---
+
+### Task 3 — Transcript Validation
+
+After Whisper returns:
+
+1. Checks `transcript_text` is not empty.
+2. Checks it is not whitespace-only (`.strip()`).
+3. Checks it contains at least 3 words (meaningful content threshold).
+4. If invalid: shows ❌ error, does **not** proceed to summary generation, does **not** save.
+5. If valid: shows ✅ with word count and detected language.
+
+Auto-save (when enabled) writes:
+- `transcripts/<name>_<timestamp>_transcript.txt` — raw transcript only
+- `transcripts/<name>_<timestamp>_summary.txt` — executive summary only
+- `transcripts/<name>_<timestamp>_metadata.json` — structured metadata
+
+**Status: IMPLEMENTED**
+
+---
+
+### Task 4 — Streamlit Interface
+
+| Element                          | Implementation                                          |
+| :------------------------------- | :------------------------------------------------------ |
+| File upload (drag & drop)        | `st.file_uploader()` with supported type list           |
+| Video preview                    | `st.video()` for `.mp4`, `.mkv`, `.mov`, `.avi`, `.webm` |
+| Audio preview                    | `st.audio()` for `.mp3`, `.wav`, `.m4a`, `.ogg`, `.flac` |
+| Transcription button             | `🎙️ Transcribe & Generate Summary`                     |
+| Step-by-step processing status   | ✅/🔄/❌ per pipeline stage (validation → audio → whisper → transcript check → summary) |
+| Transcript display               | Full text area + timestamped segments expander          |
+| Summary display                  | Overview card, Topics tab, Actions tab, Deadlines tab   |
+| Statistics display               | Word count, sentences, speaking time, language          |
+| Download buttons                 | Separate raw transcript + summary download              |
+
+**Status: IMPLEMENTED**
+
+---
+
+### Task 5 — Accuracy Testing
+
+**WER Formula:**
+
+```
+Accuracy = max(0, 1 − WER) × 100%
+```
+
+**Normalization before comparison** (both reference and hypothesis):
+1. Lowercase
+2. Remove all punctuation
+3. Normalize whitespace
+4. Strip leading/trailing whitespace
+
+**Tools:** `jiwer` (industry-standard WER alignment). Falls back to dynamic programming if unavailable.
+
+**Detailed output in the Stats tab (when reference provided):**
+
+| Metric        | Description                          |
+| :------------ | :----------------------------------- |
+| Reference Words | Word count after normalization      |
+| Generated Words | Word count after normalization      |
+| WER             | Word Error Rate                     |
+| Substitutions   | Words changed                       |
+| Deletions       | Words missing from hypothesis       |
+| Insertions      | Extra words in hypothesis           |
+| Accuracy        | `max(0, 1 − WER) × 100%`           |
+| Status          | ✅ PASS (≥90%) or ❌ FAIL (<90%)   |
+
+**Batch evaluation:** Run `python run_evaluation.py` to process all recordings in `evaluation/recordings/` against matching reference transcripts in `evaluation/references/`.
+
+**Current accuracy results: No recordings tested yet.**  
+Place recordings and references in the `evaluation/` subdirectories and run the evaluation script. Results will be written to `evaluation/accuracy_results.csv`. No accuracy results are claimed that have not been measured.
+
+**Status: FRAMEWORK IMPLEMENTED — RECORDINGS NOT YET ADDED**
+
+---
+
+## ⚙️ Automated Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+| Test File                 | Tests | Covers                                                           |
+| :------------------------ | :---: | :--------------------------------------------------------------- |
+| `tests/test_validator.py` |  36   | Extension validation, size checks, ffprobe edge cases, fake media |
+| `tests/test_audio_processor.py` | 9 | Conversion output, 16kHz/mono, ffmpeg errors, missing input |
+| `tests/test_accuracy.py`  |  23   | Normalization, identical/substitution/deletion/insertion, punctuation/case/whitespace tolerance |
+| **Total**                 | **68** | **68/68 PASS** |
+
+> Whisper models are **not downloaded** during tests. `AudioProcessor` and `Transcriber` are tested with mocking where model loading would be required.
+
+---
+
 ## 📄 License
+
 MIT License

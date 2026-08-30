@@ -1,3 +1,9 @@
 streamlit>=1.32.0
 openai-whisper>=20231117
 jiwer>=3.0.0
+pytest>=7.0.0
+
+# FFmpeg must be installed at the OS level (not via pip):
+#   Windows : winget install ffmpeg
+#   macOS   : brew install ffmpeg
+#   Linux   : sudo apt install ffmpeg

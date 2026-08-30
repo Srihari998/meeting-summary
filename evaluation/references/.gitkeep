@@ -1,0 +1,7 @@
+Place reference transcript text files in this directory.
+
+Naming convention: recording_01.txt, meeting_sprint.txt, etc.
+Each file must match a recording in ../recordings/ with the same base name.
+
+The reference transcript should be verbatim expected speech (what was actually said in the recording).
+Do NOT edit/correct the transcript — it must reflect what was spoken, not what was intended.

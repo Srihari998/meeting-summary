@@ -10,12 +10,15 @@ __pycache__/
 # Streamlit
 .streamlit/
 
-# Transcripts auto-save folder
+# Transcripts auto-save folder (user-generated content)
 transcripts/
 
-# Large raw video dumps (optional to exclude raw intermediate files)
-meeting_video_ES2008a_raw.avi
-sample_meeting_video_6min.mp4
+# Evaluation recordings and references (may contain personal/confidential meeting data)
+evaluation/recordings/*
+evaluation/references/*
+# Keep folder structure
+!evaluation/recordings/.gitkeep
+!evaluation/references/.gitkeep
 
 # OS generated files
 .DS_Store
