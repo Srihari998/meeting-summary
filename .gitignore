@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.cache/
+.pytest_cache/
+
+# Streamlit
+.streamlit/
+
+# Transcripts auto-save folder
+transcripts/
+
+# Large raw video dumps (optional to exclude raw intermediate files)
+meeting_video_ES2008a_raw.avi
+sample_meeting_video_6min.mp4
+
+# OS generated files
+.DS_Store
+Thumbs.db
