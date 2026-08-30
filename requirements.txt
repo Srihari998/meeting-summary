@@ -1,7 +1,2 @@
-# Meeting Transcription Tool — Python Dependencies
-# Install with: pip install -r requirements.txt
-
 streamlit>=1.32.0
 openai-whisper>=20231117
-pyannote.audio>=3.1       # speaker diarization (requires HuggingFace token)
-# ffmpeg must be installed at the OS level (not via pip).

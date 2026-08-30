@@ -17,24 +17,21 @@ It automatically extracts audio from any uploaded video or audio meeting recordi
   - 📑 **Topics Discussed**: Discussion points organized under clear topic categories.
   - ✅ **Action Items**: Explicitly assigned tasks and deliverables.
   - ⏰ **Deadlines & Milestones**: Extracted dates, days, and submission deadlines.
-- 📊 **Validation & Accuracy Check**: Built-in file stream validation and Word Error Rate (WER) accuracy calculation against reference transcripts.
-- 💾 **Export & Auto-save**: Auto-saves transcripts with metadata and provides single-click download for both **Executive Summary** and **Raw Transcript**.
+- 📊 **Validation & Metrics**: Built-in file stream validation, reading/speaking time estimates, and word counts.
+- 💾 **Export & Auto-save**: Auto-saves transcripts and provides single-click download for both **Executive Summary** and **Raw Transcript**.
 
 ---
 
 ## 📁 Project Structure
 
 ```text
-task-1/
-├── app.py                         # Streamlit web application UI
-├── audio_processor.py             # FFmpeg audio conversion & extraction
-├── transcriber.py                 # OpenAI Whisper model wrapper
-├── summarizer.py                  # Topic clustering & executive summary generator
-├── validator.py                   # File upload & audio stream validation
-├── accuracy_test.py               # CLI tool for WER accuracy benchmarking
-├── test_transcription_workflow.py # CLI end-to-end pipeline test script
-├── requirements.txt               # Python package dependencies
-└── README.md                      # Project documentation
+├── app.py              # Streamlit web application UI
+├── audio_processor.py  # FFmpeg audio conversion & extraction
+├── transcriber.py      # OpenAI Whisper model wrapper
+├── summarizer.py       # Topic clustering & executive summary generator
+├── validator.py        # File upload & audio stream validation
+├── requirements.txt    # Python package dependencies
+└── README.md           # Project documentation
 ```
 
 ---
@@ -66,20 +63,6 @@ Launch the Streamlit dashboard:
 streamlit run app.py
 ```
 Open your browser at `http://localhost:8501`.
-
----
-
-## 🧪 CLI Testing
-
-You can also run tests without opening the browser:
-
-```bash
-# Test the complete workflow on a sample file:
-python test_transcription_workflow.py sample_recording.wav
-
-# Run accuracy testing with a reference transcript:
-python accuracy_test.py sample_recording.wav "expected transcript text"
-```
 
 ---
 
