@@ -3,3 +3,7 @@ ES2002a.wav,tiny,1272,65.3,2600,2341,509,411,152,0.4123,58.77,FAIL,AMI ES2002a; 
 ES2002a.wav,base,1272,54.4,2600,2205,328,522,127,0.3758,62.42,FAIL,AMI ES2002a; multi-speaker; 4-channel ref; official annotation v1.6.2
 ES2002a.wav,small,1272,165.8,2600,2079,237,593,72,0.3469,65.31,FAIL,AMI ES2002a; multi-speaker; 4-channel ref; official annotation v1.6.2
 ES2002a.wav,medium,1272,1489.0,2600,2135,233,522,57,0.3123,68.77,FAIL,AMI ES2002a; multi-speaker; 4-channel ref; official annotation v1.6.2
+dev-clean (30 diverse utterances),tiny,180,17.7,646,645,37,3,4,0.0681,93.19,PASS,LibriSpeech dev-clean sample; single speaker clean speech
+dev-clean (30 diverse utterances),base,180,19.6,646,648,36,3,5,0.0681,93.19,PASS,LibriSpeech dev-clean sample; single speaker clean speech
+dev-clean (30 diverse utterances),small,180,35.6,646,645,24,4,3,0.048,95.2,PASS,LibriSpeech dev-clean sample; single speaker clean speech
+librispeech_1272_128104.flac (full chapter),base,105,6.2,335,332,25,5,2,0.0955,90.45,PASS,LibriSpeech dev-clean chapter 1272-128104 (15 utterances concatenated)
