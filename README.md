@@ -208,10 +208,17 @@ Accuracy = max(0, 1 − WER) × 100%
 
 **Batch evaluation:** Run `python run_evaluation.py` to process all recordings in `evaluation/recordings/` against matching reference transcripts in `evaluation/references/`.
 
-**Current accuracy results: No recordings tested yet.**  
-Place recordings and references in the `evaluation/` subdirectories and run the evaluation script. Results will be written to `evaluation/accuracy_results.csv`. No accuracy results are claimed that have not been measured.
+**Real measured results — ES2002a.wav (AMI Corpus, 21-minute kickoff meeting):**
 
-**Status: FRAMEWORK IMPLEMENTED — RECORDINGS NOT YET ADDED**
+| Recording | Model | Duration | Ref Words | Gen Words | Subs | Dels | Ins | WER | Accuracy | Pass/Fail |
+|-----------|-------|----------|-----------|-----------|------|------|-----|-----|----------|-----------|
+| ES2002a.wav | base | 21.2 min | 2,600 | 2,416 | 400 | 417 | 233 | 40.4% | 59.6% | FAIL |
+
+**Reference:** Official AMI manual annotation v1.6.2 (multi-speaker, word-level XML).
+
+**Analysis:** The `base` model achieves **59.6% accuracy** on this multi-speaker meeting. The 90% threshold is not met with `base`. Use `small` or `medium` Whisper model for higher accuracy on multi-speaker recordings.
+
+**Status: TESTED WITH REAL DATA — base model: 59.6% accuracy**
 
 ---
 

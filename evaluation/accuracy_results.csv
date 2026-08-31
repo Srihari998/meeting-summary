@@ -1,1 +1,2 @@
 recording,model,duration_sec,ref_words,gen_words,substitutions,deletions,insertions,wer,accuracy_pct,pass_fail,notes
+ES2002a.wav,base,1272,2600,2416,400,417,233,0.4038,59.62,FAIL,AMI corpus kickoff meeting; multi-speaker; real evaluation
