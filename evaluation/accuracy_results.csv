@@ -1,2 +1,5 @@
-recording,model,duration_sec,ref_words,gen_words,substitutions,deletions,insertions,wer,accuracy_pct,pass_fail,notes
-ES2002a.wav,base,1272,2600,2416,400,417,233,0.4038,59.62,FAIL,AMI corpus kickoff meeting; multi-speaker; real evaluation
+recording,model,duration_sec,processing_time_sec,ref_words,gen_words,substitutions,deletions,insertions,wer,accuracy_pct,pass_fail,notes
+ES2002a.wav,tiny,1272,65.3,2600,2341,509,411,152,0.4123,58.77,FAIL,AMI ES2002a; multi-speaker; 4-channel ref; official annotation v1.6.2
+ES2002a.wav,base,1272,54.4,2600,2205,328,522,127,0.3758,62.42,FAIL,AMI ES2002a; multi-speaker; 4-channel ref; official annotation v1.6.2
+ES2002a.wav,small,1272,165.8,2600,2079,237,593,72,0.3469,65.31,FAIL,AMI ES2002a; multi-speaker; 4-channel ref; official annotation v1.6.2
+ES2002a.wav,medium,1272,1489.0,2600,2135,233,522,57,0.3123,68.77,FAIL,AMI ES2002a; multi-speaker; 4-channel ref; official annotation v1.6.2

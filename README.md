@@ -208,17 +208,26 @@ Accuracy = max(0, 1 − WER) × 100%
 
 **Batch evaluation:** Run `python run_evaluation.py` to process all recordings in `evaluation/recordings/` against matching reference transcripts in `evaluation/references/`.
 
-**Real measured results — ES2002a.wav (AMI Corpus, 21-minute kickoff meeting):**
+**Real measured results — ES2002a.wav (AMI Corpus, 21.2-minute kickoff meeting, 4 speakers):**
 
-| Recording | Model | Duration | Ref Words | Gen Words | Subs | Dels | Ins | WER | Accuracy | Pass/Fail |
-|-----------|-------|----------|-----------|-----------|------|------|-----|-----|----------|-----------|
-| ES2002a.wav | base | 21.2 min | 2,600 | 2,416 | 400 | 417 | 233 | 40.4% | 59.6% | FAIL |
+| Model | Processing Time | Ref Words | Gen Words | Subs | Dels | Ins | WER | Accuracy | Pass/Fail (≥90%) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **tiny** | 65.3s | 2,600 | 2,341 | 509 | 411 | 152 | 41.23% | 58.77% | ❌ FAIL |
+| **base** | 54.4s | 2,600 | 2,205 | 328 | 522 | 127 | 37.58% | 62.42% | ❌ FAIL |
+| **small** | 165.8s | 2,600 | 2,079 | 237 | 593 | 72 | 34.69% | 65.31% | ❌ FAIL |
+| **medium** | 1489.0s | 2,600 | 2,135 | 233 | 522 | 57 | 31.23% | 68.77% | ❌ FAIL |
 
-**Reference:** Official AMI manual annotation v1.6.2 (multi-speaker, word-level XML).
+**Reference Specification:**
+- **Source:** Official AMI manual annotation v1.6.2 (`ES2002a.{A,B,C,D}.words.xml`).
+- **Channels:** All 4 speaker channels merged in chronological order.
+- **Reference Words:** 2,600 spoken words after standard punctuation and case normalization (3,105 raw XML nodes minus 505 punctuation tokens).
+- **Evaluation Engine:** Identical `accuracy.py` pipeline (WER calculated via `jiwer` after lowercase, punctuation removal, and whitespace collapse).
 
-**Analysis:** The `base` model achieves **59.6% accuracy** on this multi-speaker meeting. The 90% threshold is not met with `base`. Use `small` or `medium` Whisper model for higher accuracy on multi-speaker recordings.
+**Findings:**
+- **Best model:** `medium` achieved the lowest WER (**31.23%**) and highest accuracy (**68.77%**).
+- **≥90% Threshold:** Not achieved by any standard zero-shot Whisper model on this multi-speaker meeting audio.
 
-**Status: TESTED WITH REAL DATA — base model: 59.6% accuracy**
+**Status: EXPERIMENTALLY TESTED — Best: `medium` (68.77% accuracy)**
 
 ---
 
