@@ -64,7 +64,6 @@ class TestSpeakerDiarizer:
         wav_path = str(tmp_path / "single_spk.wav")
         make_dummy_wav(wav_path, duration_sec=3.0)
 
-        # Mock embedding extractor
         mock_ext = MagicMock()
         mock_vec = np.zeros(256, dtype=np.float32)
         mock_vec[0] = 1.0
@@ -85,13 +84,26 @@ class TestSpeakerDiarizer:
         v2 = np.zeros(256, dtype=np.float32); v2[100] = 1.0
 
         mock_ext = MagicMock()
-        mock_ext.embed_utterance.side_effect = [v1, v1, v2, v2, v1]
+        mock_ext.embed_utterance.side_effect = [v1, v1, v2, v2, v1, v1]
 
         diarizer = SpeakerDiarizer(extractor=mock_ext)
         turns = diarizer.diarize(wav_path)
 
         speakers = {t["speaker"] for t in turns}
         assert "Speaker 1" in speakers
+
+    def test_micro_turn_absorption(self):
+        """A sub-second flicker turn (<0.6s) flanked by the same speaker should be absorbed."""
+        turns = [
+            {"start": 0.0, "end": 4.0, "speaker": "Speaker 1", "speaker_id": 0},
+            {"start": 4.0, "end": 4.3, "speaker": "Speaker 2", "speaker_id": 1},  # 0.3s micro turn
+            {"start": 4.3, "end": 8.0, "speaker": "Speaker 1", "speaker_id": 0},
+        ]
+        smoothed = _merge_and_smooth_turns(turns)
+        assert len(smoothed) == 1
+        assert smoothed[0]["speaker"] == "Speaker 1"
+        assert smoothed[0]["start"] == 0.0
+        assert smoothed[0]["end"] == 8.0
 
     def test_chronological_ordering_preserved(self):
         turns = [
@@ -130,7 +142,6 @@ class TestWhisperAlignment:
         assert aligned[2]["text"] == "Let us review the timeline."
 
     def test_consecutive_same_speaker_grouped(self):
-        """Two consecutive Whisper segments by the same speaker should be grouped into one turn."""
         whisper_segments = [
             {"start": 0.0, "end": 2.0, "text": "Part one."},
             {"start": 2.0, "end": 4.0, "text": "Part two."},

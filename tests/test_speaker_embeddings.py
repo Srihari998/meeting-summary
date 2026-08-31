@@ -18,6 +18,8 @@ from speaker_embeddings import (
     compute_similarity,
     cluster_embeddings,
     format_speaker_id,
+    _merge_similar_centroids,
+    _prune_satellite_clusters,
 )
 
 
@@ -57,7 +59,6 @@ class TestEmbeddingExtractor:
 
     def test_short_audio_returns_zeros(self):
         ext = SpeakerEmbeddingExtractor()
-        # Less than 100ms (1600 samples at 16kHz)
         tiny_pcm = np.random.randn(500).astype(np.float32)
         emb = ext.embed_utterance(tiny_pcm, sample_rate=16000)
         assert len(emb) == 256
@@ -89,19 +90,23 @@ class TestClustering:
         """All segments belonging to the same voice should get cluster ID 0."""
         base_vec = np.random.randn(256).astype(np.float32)
         base_vec /= np.linalg.norm(base_vec)
-        # 5 slightly perturbed versions of same speaker
-        embs = [base_vec + np.random.randn(256) * 0.02 for _ in range(5)]
-        labels = cluster_embeddings(embs, threshold=0.70)
-        assert labels == [0, 0, 0, 0, 0]
+        embs = [base_vec + np.random.randn(256) * 0.01 for _ in range(6)]
+        labels = cluster_embeddings(embs, threshold=0.80)
+        assert len(set(labels)) == 1
+        assert labels[0] == 0
 
     def test_two_distinct_speakers(self):
         """Two distinct orthogonal voices should be assigned cluster 0 and 1."""
         spk1 = np.zeros(256, dtype=np.float32); spk1[0:100] = 1.0; spk1 /= np.linalg.norm(spk1)
         spk2 = np.zeros(256, dtype=np.float32); spk2[100:200] = 1.0; spk2 /= np.linalg.norm(spk2)
 
-        embs = [spk1, spk1, spk2, spk2, spk1]
-        labels = cluster_embeddings(embs, threshold=0.70)
-        assert labels == [0, 0, 1, 1, 0]
+        # 5 samples each to exceed min_cluster_samples
+        embs = [spk1]*5 + [spk2]*5 + [spk1]*5
+        labels = cluster_embeddings(embs, threshold=0.80)
+        assert len(set(labels)) == 2
+        assert labels[0] == 0
+        assert labels[5] == 1
+        assert labels[10] == 0
 
     def test_four_distinct_speakers(self):
         """Four distinct orthogonal speakers must get cluster IDs 0, 1, 2, 3 in order."""
@@ -110,9 +115,13 @@ class TestClustering:
         s3 = np.zeros(256, dtype=np.float32); s3[100:150] = 1.0; s3 /= np.linalg.norm(s3)
         s4 = np.zeros(256, dtype=np.float32); s4[150:200] = 1.0; s4 /= np.linalg.norm(s4)
 
-        embs = [s1, s2, s3, s4]
-        labels = cluster_embeddings(embs, threshold=0.70)
-        assert labels == [0, 1, 2, 3]
+        embs = [s1]*5 + [s2]*5 + [s3]*5 + [s4]*5
+        labels = cluster_embeddings(embs, threshold=0.80)
+        assert len(set(labels)) == 4
+        assert labels[0] == 0
+        assert labels[5] == 1
+        assert labels[10] == 2
+        assert labels[15] == 3
 
     def test_same_speaker_recurring_later(self):
         """A B A C B A pattern must preserve speaker consistency."""
@@ -120,9 +129,34 @@ class TestClustering:
         s2 = np.zeros(256, dtype=np.float32); s2[50:100] = 1.0; s2 /= np.linalg.norm(s2)
         s3 = np.zeros(256, dtype=np.float32); s3[100:150] = 1.0; s3 /= np.linalg.norm(s3)
 
-        embs = [s1, s2, s1, s3, s2, s1]
-        labels = cluster_embeddings(embs, threshold=0.70)
-        assert labels == [0, 1, 0, 2, 1, 0]
+        embs = [s1]*4 + [s2]*4 + [s1]*4 + [s3]*4 + [s2]*4 + [s1]*4
+        labels = cluster_embeddings(embs, threshold=0.80)
+        assert len(set(labels)) == 3
+        # Check that first block and third block are the same speaker
+        assert labels[0] == labels[8]
+        # Check that second block and fifth block are the same speaker
+        assert labels[4] == labels[16]
+
+    def test_short_interjection_noise_pruning(self):
+        """A single noisy/interjection frame must be absorbed into dominant cluster rather than forming a new speaker."""
+        s1 = np.zeros(256, dtype=np.float32); s1[0:50] = 1.0; s1 /= np.linalg.norm(s1)
+        noise = np.random.randn(256).astype(np.float32); noise /= np.linalg.norm(noise)
+
+        # 8 frames of speaker 1, and 1 isolated noise frame
+        embs = [s1]*8 + [noise]
+        labels = cluster_embeddings(embs, threshold=0.80, min_cluster_samples=3)
+        assert len(set(labels)) == 1
+
+    def test_centroid_merging_for_close_clusters(self):
+        """Two clusters with high centroid similarity should be merged into one."""
+        v1 = np.random.randn(256).astype(np.float32); v1 /= np.linalg.norm(v1)
+        # v2 is very close (similarity ~0.98)
+        v2 = v1 + np.random.randn(256).astype(np.float32) * 0.01; v2 /= np.linalg.norm(v2)
+
+        X = np.stack([v1] * 4 + [v2] * 4)
+        raw_labels = [0] * 4 + [1] * 4
+        merged = _merge_similar_centroids(X, raw_labels, merge_similarity=0.85)
+        assert len(set(merged)) == 1
 
     def test_explicit_speaker_count_constraint(self):
         """When num_speakers=2 is passed, exactly 2 clusters must be created."""

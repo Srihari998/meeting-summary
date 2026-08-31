@@ -5,12 +5,12 @@ Speaker Diarization & Whisper Alignment Module
 Pipeline:
   16kHz WAV
   → Voice Activity Detection (VAD)
-  → Windowed Voice Segments
-  → Speaker Embeddings (256-d d-vectors)
-  → Speaker Clustering (Anonymous IDs: 'Speaker 1', 'Speaker 2', ...)
-  → Chronological Merging & Smoothing
-  → Whisper Segment Alignment
-  → Structured Speaker Transcript & Analytics
+  → Windowed Voice Segments (2.0s window, 1.0s step)
+  → Speaker Embeddings (256-d d-vectors via ResNet VoiceEncoder)
+  → Speaker Clustering (Agglomerative + Centroid Merging + Satellite Pruning)
+  → Chronological Turn Smoothing & Micro-Turn Absorption
+  → OpenAI Whisper Segment Alignment
+  → Structured Speaker Transcript & Analytics Cards
 
 Supports optional pyannote pipeline if Hugging Face token is provided,
 with full automatic fallback to the local offline embedding engine.
@@ -25,7 +25,11 @@ from typing import Any
 
 import numpy as np
 
-from speaker_embeddings import SpeakerEmbeddingExtractor, cluster_embeddings, format_speaker_id
+from speaker_embeddings import (
+    SpeakerEmbeddingExtractor,
+    cluster_embeddings,
+    format_speaker_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +132,12 @@ class VoiceActivityDetector:
                         end_frame = idx
                         start_sec = start_frame * step_sec
                         end_sec = end_frame * step_sec
-                        if end_sec - start_sec >= 0.2:  # at least 200ms
+                        if end_sec - start_sec >= 0.25:  # at least 250ms
                             segments.append((start_sec, end_sec))
 
         if in_speech:
             segments.append((start_frame * step_sec, n_frames * step_sec))
 
-        # If VAD filtered everything (e.g. low volume), fall back to whole file
         if not segments:
             total_dur = len(wav_float) / sample_rate
             if total_dur > 0:
@@ -161,8 +164,8 @@ class SpeakerDiarizer:
         num_speakers: int | None = None,
         min_speakers: int = 1,
         max_speakers: int = 10,
-        window_size_sec: float = 1.5,
-        window_step_sec: float = 0.75,
+        window_size_sec: float = 2.0,
+        window_step_sec: float = 1.0,
     ) -> list[dict[str, Any]]:
         """
         Run speaker diarization on a 16kHz mono WAV file.
@@ -202,10 +205,10 @@ class SpeakerDiarizer:
         self,
         wav_path: str,
         num_speakers: int | None = None,
-        window_size_sec: float = 1.5,
-        window_step_sec: float = 0.75,
+        window_size_sec: float = 2.0,
+        window_step_sec: float = 1.0,
     ) -> list[dict[str, Any]]:
-        """Diarize using local VAD + VoiceEncoder embeddings + Agglomerative Clustering."""
+        """Diarize using local VAD + VoiceEncoder embeddings + Multi-stage Agglomerative Clustering."""
         with wave.open(wav_path, "rb") as wf:
             sr = wf.getframerate()
             n_frames = wf.getnframes()
@@ -218,7 +221,7 @@ class SpeakerDiarizer:
         total_duration = len(audio_pcm) / sr
 
         # 1. Voice Activity Detection
-        speech_intervals = self.vad.get_speech_segments(audio_pcm, sample_rate=sr)
+        speech_intervals = self.vad.get_speech_segments(audio_pcm, sample_rate=sr, padding_duration_ms=300)
         if not speech_intervals:
             speech_intervals = [(0.0, total_duration)]
 
@@ -234,7 +237,7 @@ class SpeakerDiarizer:
             end_idx = int(end_sec * sr)
             seg_len = end_idx - start_idx
 
-            if seg_len < int(0.3 * sr):  # skip tiny clicks (<300ms)
+            if seg_len < int(0.5 * sr):  # skip tiny clicks (<500ms)
                 continue
 
             if seg_len <= window_samples:
@@ -262,11 +265,13 @@ class SpeakerDiarizer:
                 "speaker_id": 0,
             }]
 
-        # 3. Cluster embeddings into anonymous speaker IDs
+        # 3. Enhanced Multi-stage Clustering
         cluster_ids = cluster_embeddings(
             embeddings,
-            threshold=0.72,
+            threshold=0.80,
             num_speakers=num_speakers,
+            merge_similarity=0.88,
+            min_cluster_samples=3,
         )
 
         # 4. Merge consecutive windows with the same speaker label
@@ -279,7 +284,7 @@ class SpeakerDiarizer:
                 "speaker_id": cid,
             })
 
-        return _merge_and_smooth_turns(raw_turns, max_gap_sec=0.5)
+        return _merge_and_smooth_turns(raw_turns, max_gap_sec=0.8)
 
     def _try_pyannote(self, wav_path: str, num_speakers: int | None) -> list[dict[str, Any]] | None:
         """Attempt pyannote.audio pipeline if HF token is valid."""
@@ -299,7 +304,6 @@ class SpeakerDiarizer:
         )
 
         turns: list[dict[str, Any]] = []
-        # Mapping from pyannote label (e.g. 'SPEAKER_00') to 'Speaker 1', 'Speaker 2' in order
         spk_map: dict[str, str] = {}
         spk_id_map: dict[str, int] = {}
         next_id = 0
@@ -317,13 +321,13 @@ class SpeakerDiarizer:
                 "speaker_id": spk_id_map[speaker_label],
             })
 
-        return _merge_and_smooth_turns(turns, max_gap_sec=0.5)
+        return _merge_and_smooth_turns(turns, max_gap_sec=0.8)
 
 
 def _merge_and_smooth_turns(
-    turns: list[dict[str, Any]], max_gap_sec: float = 0.5
+    turns: list[dict[str, Any]], max_gap_sec: float = 0.8
 ) -> list[dict[str, Any]]:
-    """Merge contiguous turns of the same speaker and bridge micro-gaps."""
+    """Merge contiguous turns of the same speaker and absorb sub-second micro-turns."""
     if not turns:
         return []
 
@@ -355,6 +359,30 @@ def _merge_and_smooth_turns(
         "speaker": current["speaker"],
         "speaker_id": current["speaker_id"],
     })
+
+    # Second pass: absorb isolated micro-turns (< 0.6s) into surrounding turns if flanked by same speaker
+    if len(merged) >= 3:
+        smoothed: list[dict[str, Any]] = [merged[0]]
+        i = 1
+        while i < len(merged) - 1:
+            prev_t = smoothed[-1]
+            curr_t = merged[i]
+            next_t = merged[i + 1]
+            curr_dur = curr_t["end"] - curr_t["start"]
+
+            # If isolated micro-turn between two identical speaker turns
+            if curr_dur < 0.6 and prev_t["speaker_id"] == next_t["speaker_id"]:
+                # Absorb into prev_t
+                prev_t["end"] = next_t["end"]
+                i += 2  # skip curr and next (next is absorbed)
+            else:
+                smoothed.append(curr_t)
+                i += 1
+
+        if i < len(merged):
+            smoothed.append(merged[i])
+        return smoothed
+
     return merged
 
 
@@ -385,7 +413,6 @@ def align_whisper_with_speakers(
         return []
 
     if not speaker_turns:
-        # If no diarization data, treat all as Speaker 1
         full_text = " ".join(s.get("text", "").strip() for s in whisper_segments)
         start = whisper_segments[0].get("start", 0.0)
         end = whisper_segments[-1].get("end", 0.0)
@@ -422,7 +449,6 @@ def align_whisper_with_speakers(
         if overlap_scores:
             best_cid = max(overlap_scores, key=overlap_scores.get)
         else:
-            # Nearest speaker turn if no direct overlap
             distances = [
                 (min(abs(w_start - st["end"]), abs(w_end - st["start"])), st["speaker_id"])
                 for st in speaker_turns
@@ -473,23 +499,6 @@ def compute_speaker_statistics(
 ) -> dict[str, Any]:
     """
     Calculate per-speaker speaking time, percentage of total speech, and turn counts.
-
-    Returns:
-        {
-          "speaker_count": 4,
-          "total_speech_time_sec": 1240.5,
-          "total_speech_time_formatted": "20m 40s",
-          "speakers": {
-            "Speaker 1": {
-              "speaking_time_sec": 420.0,
-              "speaking_time_formatted": "7m 00s",
-              "percentage": 33.8,
-              "turn_count": 12,
-              "word_count": 850
-            },
-            ...
-          }
-        }
     """
     if not aligned_turns:
         return {
@@ -518,7 +527,6 @@ def compute_speaker_statistics(
         speakers_data[spk]["turn_count"] += 1
         speakers_data[spk]["word_count"] += words
 
-    # Format percentages and timestamps
     benchmark_total = (
         total_speech_sec if total_speech_sec > 0 else (total_audio_duration_sec or 1.0)
     )
