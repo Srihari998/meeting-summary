@@ -7,3 +7,4 @@ dev-clean (30 diverse utterances),tiny,180,17.7,646,645,37,3,4,0.0681,93.19,PASS
 dev-clean (30 diverse utterances),base,180,19.6,646,648,36,3,5,0.0681,93.19,PASS,LibriSpeech dev-clean sample; single speaker clean speech
 dev-clean (30 diverse utterances),small,180,35.6,646,645,24,4,3,0.048,95.2,PASS,LibriSpeech dev-clean sample; single speaker clean speech
 librispeech_1272_128104.flac (full chapter),base,105,6.2,335,332,25,5,2,0.0955,90.45,PASS,LibriSpeech dev-clean chapter 1272-128104 (15 utterances concatenated)
+ES2002a.wav (with Speaker Diarization),base + VAD + 256d d-vectors,1272,166.4,2600,2401,336,415,216,0.3719,62.81,FAIL,"AMI ES2002a with VAD + 256-d d-vector diarization + Whisper base alignment (8 detected clusters, 152 aligned turns)"
