@@ -1,6 +1,8 @@
 """
 tests/test_speaker_diarization.py
 Pytest test suite for Speaker Diarization, VAD, Whisper Alignment, and Speaker Statistics.
+Includes regression tests for segment padding, boundary preservation, same-speaker merging,
+overlapping speech, short speaker turns, and chronological ordering.
 """
 
 from __future__ import annotations
@@ -8,7 +10,7 @@ import os
 import sys
 import wave
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -32,7 +34,6 @@ def make_dummy_wav(path: str, duration_sec: float = 2.0, sample_rate: int = 1600
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         n_samples = int(duration_sec * sample_rate)
-        # 440 Hz tone
         t = np.linspace(0, duration_sec, n_samples, False)
         tone = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16)
         wf.writeframes(tone.tobytes())
@@ -115,6 +116,17 @@ class TestSpeakerDiarizer:
         for i in range(len(smoothed) - 1):
             assert smoothed[i]["start"] <= smoothed[i + 1]["start"]
 
+    def test_adjacent_same_speaker_merging(self):
+        """Contiguous turns of the same speaker separated by a small gap are merged."""
+        turns = [
+            {"start": 0.0, "end": 2.0, "speaker": "Speaker 1", "speaker_id": 0},
+            {"start": 2.3, "end": 5.0, "speaker": "Speaker 1", "speaker_id": 0},
+        ]
+        merged = _merge_and_smooth_turns(turns, max_gap_sec=0.8)
+        assert len(merged) == 1
+        assert merged[0]["start"] == 0.0
+        assert merged[0]["end"] == 5.0
+
 
 class TestWhisperAlignment:
     def test_empty_segments_returns_empty(self):
@@ -140,6 +152,20 @@ class TestWhisperAlignment:
         assert aligned[1]["text"] == "Thanks! Glad to be here."
         assert aligned[2]["speaker"] == "Speaker 1"
         assert aligned[2]["text"] == "Let us review the timeline."
+
+    def test_overlapping_speech_resolution(self):
+        """When a Whisper segment spans overlapping speaker turns, assign to dominant overlap."""
+        whisper_segments = [
+            {"start": 5.0, "end": 8.0, "text": "Overlapping response here."},
+        ]
+        # Speaker 1 talks 5.0 to 6.0 (1s), Speaker 2 talks 5.5 to 8.0 (2.5s overlap)
+        speaker_turns = [
+            {"start": 5.0, "end": 6.0, "speaker": "Speaker 1", "speaker_id": 0},
+            {"start": 5.5, "end": 8.0, "speaker": "Speaker 2", "speaker_id": 1},
+        ]
+        aligned = align_whisper_with_speakers(whisper_segments, speaker_turns)
+        assert len(aligned) == 1
+        assert aligned[0]["speaker"] == "Speaker 2"
 
     def test_consecutive_same_speaker_grouped(self):
         whisper_segments = [
