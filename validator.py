@@ -50,6 +50,15 @@ class FileValidator:
     # Public API
     # ------------------------------------------------------------------
 
+    def validate(self, input_target) -> tuple[bool, str]:
+        """
+        Universal validate method: accepts either a Streamlit UploadedFile
+        or a filesystem path (str or Path).
+        """
+        if isinstance(input_target, (str, Path)):
+            return self.validate_file_path(str(input_target))
+        return self.validate_streamlit_upload(input_target)
+
     def validate_streamlit_upload(self, uploaded_file) -> tuple[bool, str]:
         """
         Validate a Streamlit UploadedFile object.
