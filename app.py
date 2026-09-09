@@ -1,6 +1,8 @@
 """
 app.py
-Meeting Transcription, Speaker Diarization & Executive Summary Tool
+Meeting Transcription, Speaker Diarization & Executive Meeting Intelligence Tool
+Integrating Milestone 1 (OpenAI Whisper + Speaker Diarization) with
+Milestone 2 (LLM Summarization, Decision Tracking & Action Item Extraction).
 
 Pipeline:
   Upload
@@ -11,7 +13,7 @@ Pipeline:
   → OpenAI Whisper Transcription
   → Speaker-Segment Alignment
   → Transcript Validation
-  → Topic Classification & Executive Summary
+  → Milestone 2 Meeting Intelligence (Gemini LLM Extraction: Summary, Key Points, Decisions, Participants, Action Items)
   → Speaker Analytics & Multi-Format Export
 """
 
@@ -22,13 +24,24 @@ import html
 import json
 import logging
 import os
+import sys
 import tempfile
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import streamlit as st
 
+# ── Ensure Milestone 2 Project Root is in sys.path ────────────────────────────
+PROJECT_ROOT = Path(r"C:\Users\Dell\.gemini\antigravity\scam caller\project-ai")
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+TASK1_ROOT = Path(r"C:\Users\Dell\project-ai\task-1")
+if str(TASK1_ROOT) not in sys.path:
+    sys.path.insert(0, str(TASK1_ROOT))
+
+# Milestone 1 Imports
 from accuracy import calculate_wer_and_metrics
 from audio_processor import AudioProcessor
 from speaker_diarization import (
@@ -41,13 +54,26 @@ from summarizer import MeetingSummarizer
 from transcriber import Transcriber
 from validator import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, FileValidator
 
+# Milestone 2 Imports
+try:
+    from milestone2.pipeline import process_meeting
+    from milestone2.llm_service import LLMExtractionError, InvalidInputError
+    from milestone2.schemas import MeetingIntelligence, ActionItem
+    MILESTONE2_AVAILABLE = True
+except Exception as _m2_err:
+    MILESTONE2_AVAILABLE = False
+    LLMExtractionError = Exception
+    InvalidInputError = ValueError
+    MeetingIntelligence = None
+    ActionItem = None
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # ── Page Configuration ────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Meeting Summarizer & Speaker Diarization",
+    page_title="Meeting Intelligence & Speaker Diarization",
     page_icon="🎙️",
     layout="wide",
 )
@@ -96,214 +122,172 @@ st.markdown(
         border-radius:0 10px 10px 0; padding:16px 20px;
         margin-bottom:20px; color:#14532D; font-size:1.05rem; line-height:1.6;
     }
+    .decision-card {
+        background:#EFF6FF; border-left:4px solid #2563EB;
+        border-radius:0 10px 10px 0; padding:14px 18px;
+        margin-bottom:12px; color:#1E3A8A; font-size:1rem;
+    }
     .topic-card {
         background:#FFFFFF; border:1px solid #E2E8F0; border-radius:10px;
-        padding:16px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.05);
+        padding:16px 20px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);
     }
-    .topic-header { font-size:1.05rem; font-weight:700; color:#1E3A8A; margin-bottom:8px; }
+    .topic-header { font-weight:700; color:#1E293B; font-size:1rem; margin-bottom:8px; }
     .action-card {
-        background:#F8FAFC; border-left:3px solid #3B82F6;
-        border-radius:0 8px 8px 0; padding:10px 14px;
-        margin-bottom:8px; font-size:.95rem; color:#1E293B;
+        background:#F8FAFC; border-left:4px solid #3B82F6;
+        border-radius:0 8px 8px 0; padding:12px 16px;
+        margin-bottom:10px; color:#1E293B; font-size:.95rem;
     }
-    .deadline-card {
-        background:#FFFBEB; border-left:3px solid #D97706;
-        border-radius:0 8px 8px 0; padding:10px 14px;
-        margin-bottom:8px; font-size:.95rem; color:#92400E;
+    .participant-pill {
+        display: inline-block; background: #E0E7FF; color: #3730A3;
+        font-weight: 600; font-size: 0.88rem; padding: 4px 12px;
+        border-radius: 9999px; margin-right: 8px; margin-bottom: 8px;
     }
     .speaker-turn-card {
         background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px;
-        padding:12px 16px; margin-bottom:10px; border-left:4px solid #6366F1;
+        padding:12px 16px; margin-bottom:10px;
     }
-    .speaker-badge-1 { background:#EEF2FF; color:#4338CA; padding:2px 8px; border-radius:6px; font-weight:700; font-size:.85rem; }
-    .speaker-badge-2 { background:#FDF2F8; color:#BE185D; padding:2px 8px; border-radius:6px; font-weight:700; font-size:.85rem; }
-    .speaker-badge-3 { background:#F0FDF4; color:#15803D; padding:2px 8px; border-radius:6px; font-weight:700; font-size:.85rem; }
-    .speaker-badge-4 { background:#FFFBEB; color:#B45309; padding:2px 8px; border-radius:6px; font-weight:700; font-size:.85rem; }
-    .speaker-badge-def { background:#F1F5F9; color:#475569; padding:2px 8px; border-radius:6px; font-weight:700; font-size:.85rem; }
-    .badge-valid   { background:#DCFCE7; color:#15803D; padding:3px 10px;
-                     border-radius:12px; font-weight:600; font-size:.8rem; }
-    .badge-invalid { background:#FEE2E2; color:#B91C1C; padding:3px 10px;
-                     border-radius:12px; font-weight:600; font-size:.8rem; }
+    .speaker-badge-1 { background:#DBEAFE; color:#1E40AF; font-weight:700; padding:2px 8px; border-radius:6px; font-size:0.85rem; }
+    .speaker-badge-2 { background:#D1FAE5; color:#065F46; font-weight:700; padding:2px 8px; border-radius:6px; font-size:0.85rem; }
+    .speaker-badge-3 { background:#FEF3C7; color:#92400E; font-weight:700; padding:2px 8px; border-radius:6px; font-size:0.85rem; }
+    .speaker-badge-4 { background:#FCE7F3; color:#9D174D; font-weight:700; padding:2px 8px; border-radius:6px; font-size:0.85rem; }
+    .priority-high { background:#FEE2E2; color:#991B1B; font-weight:700; padding:2px 8px; border-radius:6px; font-size:0.82rem; }
+    .priority-medium { background:#FEF3C7; color:#92400E; font-weight:700; padding:2px 8px; border-radius:6px; font-size:0.82rem; }
+    .priority-low { background:#E0E7FF; color:#3730A3; font-weight:700; padding:2px 8px; border-radius:6px; font-size:0.82rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-st.sidebar.title("⚙️ Settings")
+with st.sidebar:
+    st.image("https://img.icons8.com/fluency/96/microphone.png", width=64)
+    st.title("Settings & Engine")
 
-model_name: str = st.sidebar.selectbox(
-    "Whisper Model",
-    options=["tiny", "base", "small", "medium", "large"],
-    index=1,
-    help="Larger models are more accurate but slower.",
-)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 👥 Speaker Diarization")
-enable_diarization: bool = st.sidebar.checkbox(
-    "Enable Speaker Diarization",
-    value=True,
-    help="Identifies different voices and assigns anonymous labels (Speaker 1, Speaker 2...).",
-)
-
-expected_speakers_opt: str = "Auto"
-hf_token_input: str = ""
-
-if enable_diarization:
-    speaker_choice = st.sidebar.selectbox(
-        "Expected Speakers",
-        options=["Auto", "1", "2", "3", "4", "5", "6", "7", "8"],
+    st.markdown("### 🤖 Model Selection")
+    model_name = st.selectbox(
+        "Whisper ASR Model",
+        options=["base", "tiny", "small", "medium", "large"],
         index=0,
-        help="Choose 'Auto' to automatically discover distinct voices.",
+        help="base: balanced speed and accuracy. small/medium: higher accuracy.",
     )
-    expected_speakers_opt = speaker_choice
 
-    with st.sidebar.expander("🔑 Hugging Face Token (Optional)"):
-        st.markdown(
-            "<small>Optional: For pyannote.audio pipeline. Local d-vector embedding engine runs by default without tokens.</small>",
-            unsafe_allow_html=True,
+    st.markdown("### 👥 Speaker Diarization")
+    enable_diarization = st.checkbox(
+        "Enable Speaker Diarization",
+        value=True,
+        help="Detects distinct voices and assigns consistent anonymous speaker IDs (Speaker 1, Speaker 2...).",
+    )
+
+    expected_speakers_opt = "Auto"
+    if enable_diarization:
+        expected_speakers_opt = st.selectbox(
+            "Expected Speaker Count",
+            options=["Auto", "1", "2", "3", "4", "5", "6", "7", "8"],
+            index=0,
+            help="Auto: discovers speaker count automatically. Or constrain to a known number.",
         )
-        hf_token_input = st.text_input(
-            "HF Token",
-            type="password",
-            placeholder="hf_...",
-            help="Your Hugging Face user access token (optional).",
-        )
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🎯 Accuracy Testing (Task 5)")
-reference_text: str = st.sidebar.text_area(
-    "Reference Transcript (Optional)",
-    placeholder="Paste the known transcript here to calculate WER and accuracy…",
-    height=100,
-)
+    st.markdown("### 🧠 AI Intelligence (Milestone 2)")
+    enable_milestone2 = st.checkbox(
+        "Enable Milestone 2 LLM Extraction",
+        value=MILESTONE2_AVAILABLE,
+        disabled=not MILESTONE2_AVAILABLE,
+        help="Uses Google Gemini to extract executive summary, key points, decisions, participants, and action items table.",
+    )
+    if not MILESTONE2_AVAILABLE:
+        st.caption("⚠️ Milestone 2 package not detected. Using Milestone 1 heuristic summarizer.")
 
-st.sidebar.markdown("---")
-auto_save: bool = st.sidebar.checkbox("Auto-save transcript & summary", value=True)
+    hf_token = st.text_input(
+        "Hugging Face Token (Optional)",
+        type="password",
+        help="Optional: Enter HF token to use pyannote pipeline. Defaults to local offline d-vector engine.",
+    )
 
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**Supported Formats:**\n"
-    "- 🎬 Video: `MP4` `MKV` `MOV` `AVI` `WebM`\n"
-    "- 🎵 Audio: `MP3` `WAV` `M4A` `OGG` `FLAC`\n\n"
-    "**Limit:** 500 MB\n\n"
-    "_FFmpeg must be installed on the system._"
-)
+    st.markdown("### 💾 Export & Auto-save")
+    auto_save = st.checkbox("Auto-save outputs to `transcripts/`", value=True)
+
+    st.markdown("---")
+    st.caption("🎙️ **Milestone 1 + 2 Integrated Pipeline**")
+    st.caption("✅ OpenAI Whisper ASR | ✅ ResNet Voice Clustering | ✅ Gemini LLM Intelligence")
 
 # ── Main Header ───────────────────────────────────────────────────────────────
-st.title("🎙️ Meeting Summarizer & Speaker Diarization")
+st.title("🎙️ Meeting Summarizer & Action Item Extraction")
 st.markdown(
-    "Upload any meeting recording to generate an **AI speaker-labeled transcript**, "
-    "structured executive summary, and speaking-time analytics."
+    "Upload meeting video or audio to generate **speaker-attributed transcripts**, "
+    "**executive summaries**, **key decisions**, and a structured **Action Items Table**."
 )
 
-# ── Upload Area ───────────────────────────────────────────────────────────────
-SUPPORTED = sorted(
-    ext.lstrip(".") for ext in (AUDIO_EXTENSIONS | VIDEO_EXTENSIONS)
-)
+all_supported = sorted(list(AUDIO_EXTENSIONS | VIDEO_EXTENSIONS))
 uploaded_file = st.file_uploader(
-    label="Upload meeting recording",
-    type=SUPPORTED,
-    label_visibility="collapsed",
-    help="Supports all common video and audio formats up to 500 MB.",
+    "Drop meeting recording here or click to browse",
+    type=all_supported,
+    help=f"Supported formats: {', '.join(all_supported).upper()}",
 )
 
-# ── File Uploaded ─────────────────────────────────────────────────────────────
-if uploaded_file is not None:
-    st.markdown("---")
+# Optional reference transcript for live accuracy testing
+with st.expander("🎯 Accuracy Evaluation / Ground-Truth Reference (Optional)"):
+    reference_text = st.text_area(
+        "Paste Ground-Truth Reference Transcript",
+        placeholder="Paste official reference transcript here to compute real-time WER, accuracy, substitutions, deletions, and insertions…",
+        height=100,
+    )
 
-    file_ext = Path(uploaded_file.name).suffix.lower().lstrip(".")
-    col_preview, col_info = st.columns([2, 1])
-    with col_preview:
-        if f".{file_ext}" in VIDEO_EXTENSIONS:
-            st.video(uploaded_file)
-        else:
-            st.audio(uploaded_file)
+start_button = st.button("🚀 Process Recording", type="primary", disabled=uploaded_file is None)
 
-    validator = FileValidator()
-    is_valid, val_error = validator.validate_streamlit_upload(uploaded_file)
+# ── Pipeline Execution ────────────────────────────────────────────────────────
+if start_button and uploaded_file is not None:
+    tmp_input: str | None = None
+    tmp_wav: str | None = None
 
-    with col_info:
-        size_mb = uploaded_file.size / (1024 * 1024)
-        badge = (
-            "<span class='badge-valid'>✔ Valid File</span>"
-            if is_valid else
-            "<span class='badge-invalid'>✘ Invalid File</span>"
-        )
-        diar_badge = "✅ Enabled" if enable_diarization else "Disabled"
-        st.markdown(
-            f"**📁 File:** `{html.escape(uploaded_file.name)}`  \n"
-            f"**Size:** {size_mb:.2f} MB  \n"
-            f"**Model:** `{model_name}`  \n"
-            f"**Diarization:** `{diar_badge}`  \n"
-            f"**Status:** {badge}",
-            unsafe_allow_html=True,
-        )
-
-    if not is_valid:
-        st.error(f"❌ **Validation Failed:** {val_error}")
-        st.stop()
-
-    # ── Transcribe Button ─────────────────────────────────────────────────────
-    if st.button("🎙️ Transcribe & Generate Summary", type="primary"):
-        tmp_input: str | None = None
-        tmp_wav: str | None = None
-
+    with st.container():
         try:
-            # ── Stage 1: Save upload to temp file (chunked) ──────────────────
-            suffix = Path(uploaded_file.name).suffix or ".tmp"
-            uploaded_file.seek(0)
-            with tempfile.NamedTemporaryFile(
-                delete=False, suffix=suffix, prefix="upload_"
-            ) as f:
-                while chunk := uploaded_file.read(1024 * 1024):
-                    f.write(chunk)
-                tmp_input = f.name
+            # ── Stage 1: File Validation ──────────────────────────────────────
+            with st.spinner("🔍 Validating file format and integrity…"):
+                validator = FileValidator()
+                is_valid, err_msg = validator.validate(uploaded_file)
+                if not is_valid:
+                    st.error(f"❌ **Validation Failed:** {err_msg}")
+                    st.stop()
 
-            st.markdown("#### ⚙️ Processing Pipeline")
+            st.success("✅ File validation passed")
 
-            # ── Stage 2: File Validation ──────────────────────────────────────
-            with st.spinner("🔍 Validating file…"):
-                if not os.path.exists(tmp_input) or os.path.getsize(tmp_input) == 0:
-                    raise RuntimeError("Uploaded file could not be saved for processing.")
-            st.success("✅ File validation completed")
+            # ── Stage 2: Save to Temp File ────────────────────────────────────
+            suffix = Path(uploaded_file.name).suffix.lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f_in:
+                f_in.write(uploaded_file.getvalue())
+                tmp_input = f_in.name
 
-            # ── Stage 3: Audio Processing ─────────────────────────────────────
-            with st.spinner("🔊 Processing audio via ffmpeg (converting to 16 kHz mono WAV)…"):
+            # ── Stage 3: Audio Extraction & 16kHz WAV Conversion ─────────────
+            with st.spinner("🔊 Converting audio to 16 kHz Mono WAV…"):
                 processor = AudioProcessor()
                 tmp_wav = processor.process(tmp_input)
 
             # Get duration
-            audio_duration_sec = 0.0
-            try:
-                with wave.open(tmp_wav, "rb") as wf:
-                    audio_duration_sec = wf.getnframes() / wf.getframerate()
-            except Exception:
-                pass
+            with wave.open(tmp_wav, "rb") as wf:
+                audio_duration_sec = wf.getnframes() / wf.getframerate()
 
-            st.success(f"✅ Audio processing completed ({audio_duration_sec:.1f}s duration)")
+            st.success(f"✅ Audio converted: {audio_duration_sec:.1f}s ({audio_duration_sec/60:.1f} min)")
 
-            # ── Stage 4: Speaker Diarization (if enabled) ─────────────────────
+            # ── Stage 4: Speaker Diarization (Optional) ───────────────────────
             speaker_turns: list[dict[str, Any]] = []
             num_speakers_detected: int = 1
 
             if enable_diarization:
-                with st.spinner("👥 Detecting speakers & voice clusters (VAD + 256-d embeddings)..."):
+                with st.spinner("👥 Analyzing voices & clustering speaker embeddings…"):
                     try:
-                        n_spk = None if expected_speakers_opt == "Auto" else int(expected_speakers_opt)
-                        diarizer = get_diarizer(hf_token=hf_token_input if hf_token_input else None)
+                        diarizer = get_diarizer(hf_token=hf_token.strip() if hf_token else None)
+                        n_spk = int(expected_speakers_opt) if expected_speakers_opt != "Auto" else None
                         speaker_turns = diarizer.diarize(tmp_wav, num_speakers=n_spk)
-                        unique_spks = set(t["speaker"] for t in speaker_turns)
-                        num_speakers_detected = len(unique_spks)
-                        st.success(f"✅ Speaker diarization completed — **{num_speakers_detected} speakers detected**")
+                        detected_set = set(t["speaker"] for t in speaker_turns)
+                        num_speakers_detected = max(1, len(detected_set))
+                        st.success(f"✅ Speaker diarization complete ({num_speakers_detected} speakers detected)")
                     except Exception as exc:
-                        logger.warning("Diarization failed: %s, falling back to single speaker", exc)
-                        st.warning(f"⚠️ Speaker diarization encountered an issue: {exc}. Continuing with standard transcription.")
+                        logger.warning("Diarization failed: %s, continuing with standard transcription", exc)
+                        st.warning(f"⚠️ Speaker diarization note: {exc}")
                         speaker_turns = []
 
-            # ── Stage 5: Whisper Transcription ────────────────────────────────
-            with st.spinner(f"🤖 Transcribing with Whisper ({model_name} model)…"):
+            # ── Stage 5: Full-Stream Whisper Transcription ────────────────────
+            with st.spinner(f"🤖 Transcribing speech with Whisper ({model_name} model)…"):
                 transcriber = get_transcriber(model_name)
                 result = transcriber.transcribe(tmp_wav)
 
@@ -313,21 +297,17 @@ if uploaded_file is not None:
             st.success("✅ Whisper transcription completed")
 
             # ── Stage 6: Transcript Validation ───────────────────────────────
-            with st.spinner("🔎 Validating transcript…"):
+            with st.spinner("🔎 Validating transcript content…"):
                 is_meaningful = bool(raw_text) and len(raw_text.split()) >= 3
 
             if not is_meaningful:
                 st.error(
                     "❌ **Transcript Validation Failed:** No meaningful speech was detected. "
-                    "Please check that the audio track contains spoken content and try again."
+                    "Please verify that the audio contains spoken words and try again."
                 )
-                logger.warning("Empty transcript for file: %s", uploaded_file.name)
                 st.stop()
 
-            st.success(
-                f"✅ Transcript validation completed "
-                f"({len(raw_text.split())} words, language: {language.upper()})"
-            )
+            st.success(f"✅ Transcript validated ({len(raw_text.split())} words, language: {language.upper()})")
 
             # ── Stage 7: Speaker-Segment Alignment ────────────────────────────
             aligned_turns: list[dict[str, Any]] = []
@@ -341,32 +321,62 @@ if uploaded_file is not None:
                     speaker_transcript_doc = format_speaker_transcript(aligned_turns)
                 st.success("✅ Speaker alignment completed")
 
-            # ── Stage 8: Summary Generation ───────────────────────────────────
-            with st.spinner("✨ Analyzing topics & generating executive summary…"):
-                summarizer = MeetingSummarizer()
-                summary: dict[str, Any] = summarizer.summarize(raw_text)
-            st.success("✅ Executive summary generated")
+            # ── Stage 8: Milestone 2 Meeting Intelligence & LLM Extraction ───
+            meeting_intel: Optional[MeetingIntelligence] = None
+            m1_summary: dict[str, Any] = {}
+
+            if enable_milestone2 and MILESTONE2_AVAILABLE:
+                with st.spinner("✨ Extracting Meeting Intelligence via Gemini (Milestone 2)…"):
+                    try:
+                        meeting_intel = process_meeting(raw_text)
+                        st.success("✅ Milestone 2 Meeting Intelligence extracted successfully")
+                    except InvalidInputError as exc:
+                        logger.warning("Milestone 2 InvalidInputError: %s", exc)
+                        st.warning(f"⚠️ Milestone 2 Input Notice: {exc}")
+                    except LLMExtractionError as exc:
+                        logger.warning("Milestone 2 LLMExtractionError: %s", exc)
+                        st.warning(f"⚠️ Milestone 2 LLM Extraction Notice: {exc}")
+                    except Exception as exc:
+                        logger.error("Milestone 2 error: %s", exc, exc_info=True)
+                        st.warning(f"⚠️ Milestone 2 processing encountered an issue: {exc}")
+
+            # Heuristic Milestone 1 fallback if needed
+            summarizer = MeetingSummarizer()
+            m1_summary = summarizer.summarize(raw_text)
 
             # ── Display Results ───────────────────────────────────────────────
             st.markdown("---")
-            st.subheader("📋 Executive Meeting Summary & Transcript")
+            st.subheader("📋 Meeting Intelligence Dashboard")
 
             # Overview Card
-            overview_html = html.escape(summary["overview"])
+            summary_text = meeting_intel.summary if meeting_intel else m1_summary["overview"]
+            overview_html = html.escape(summary_text)
+            engine_badge = "Gemini LLM (Milestone 2)" if meeting_intel else "Heuristic Classifier (Milestone 1)"
+            
             st.markdown(
                 f"""<div class="overview-card">
-                    <strong>🎯 Main Objective &amp; Overview:</strong><br>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <strong>🎯 Executive Summary:</strong>
+                        <span style="font-size:0.8rem; background:#DCFCE7; color:#166534; padding:2px 8px; border-radius:6px; font-weight:600;">{engine_badge}</span>
+                    </div>
                     {overview_html}
                 </div>""",
                 unsafe_allow_html=True,
             )
 
+            # Participants Pills
+            participants_list = meeting_intel.participants if (meeting_intel and meeting_intel.participants) else []
+            if participants_list:
+                pills_html = "".join(f"<span class='participant-pill'>👤 {html.escape(p)}</span>" for p in participants_list)
+                st.markdown(f"**👥 Meeting Participants:** {pills_html}", unsafe_allow_html=True)
+                st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
+
             # Tab setup
             tab_titles = [
                 "👥 Speaker Transcript" if enable_diarization and aligned_turns else "📝 Transcript",
-                "📑 Topics Discussed",
                 "✅ Action Items",
-                "⏰ Deadlines & Milestones",
+                "📑 Key Discussion Points",
+                "🤝 Agreed Decisions",
                 "📊 Stats & Speakers",
                 "📝 Raw Transcript",
             ]
@@ -394,52 +404,89 @@ if uploaded_file is not None:
                 else:
                     st.text_area("Transcript", value=raw_text, height=350, label_visibility="collapsed")
 
-            # Tab 2: Topics
+            # Tab 2: Action Items Table (Milestone 2)
             with tabs[1]:
-                if summary["topic_groups"]:
-                    for group in summary["topic_groups"]:
-                        topic_esc = html.escape(group["topic"])
-                        points_html = "".join(
-                            f"<li style='margin-bottom:6px;'>{html.escape(p)}</li>"
-                            for p in group["points"]
+                if meeting_intel and meeting_intel.action_items:
+                    st.markdown(f"#### ✅ Extracted Action Items ({len(meeting_intel.action_items)} Tasks)")
+                    
+                    # Render structured interactive table
+                    table_rows = []
+                    for item in meeting_intel.action_items:
+                        table_rows.append({
+                            "Task Description": item.task,
+                            "Assignee": item.assignee,
+                            "Deadline": item.deadline or "—",
+                            "Priority": item.priority,
+                            "Status": item.status,
+                        })
+                    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+                    # Card view
+                    st.markdown("##### 📌 Detailed Task Cards")
+                    for item in meeting_intel.action_items:
+                        p_class = f"priority-{item.priority.lower()}"
+                        st.markdown(
+                            f"""<div class="action-card">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <strong>☑️ {html.escape(item.task)}</strong>
+                                    <span class="{p_class}">{html.escape(item.priority)}</span>
+                                </div>
+                                <div style="margin-top:4px; font-size:0.88rem; color:#475569;">
+                                    👤 <strong>Assignee:</strong> {html.escape(item.assignee)} &nbsp;|&nbsp; 
+                                    ⏰ <strong>Deadline:</strong> {html.escape(item.deadline or 'Not specified')} &nbsp;|&nbsp; 
+                                    🔄 <strong>Status:</strong> {html.escape(item.status)}
+                                </div>
+                            </div>""",
+                            unsafe_allow_html=True,
                         )
+                elif m1_summary.get("action_items"):
+                    st.markdown("#### ✅ Action Items (Heuristic)")
+                    for item in m1_summary["action_items"]:
+                        st.markdown(f"<div class='action-card'>☑️ {html.escape(item)}</div>", unsafe_allow_html=True)
+                else:
+                    st.info("No explicit action items detected in this recording.")
+
+            # Tab 3: Key Discussion Points
+            with tabs[2]:
+                if meeting_intel and meeting_intel.key_points:
+                    st.markdown("#### 📑 Key Discussion Points")
+                    for pt in meeting_intel.key_points:
+                        st.markdown(f"• {pt}")
+                elif m1_summary.get("topic_groups"):
+                    for group in m1_summary["topic_groups"]:
+                        topic_esc = html.escape(group["topic"])
+                        points_html = "".join(f"<li style='margin-bottom:6px;'>{html.escape(p)}</li>" for p in group["points"])
                         st.markdown(
                             f"""<div class="topic-card">
                                 <div class="topic-header">🔹 {topic_esc}</div>
-                                <ul style="margin:0;padding-left:20px;color:#334155;">
-                                    {points_html}
-                                </ul>
+                                <ul style="margin:0;padding-left:20px;color:#334155;">{points_html}</ul>
                             </div>""",
                             unsafe_allow_html=True,
                         )
                 else:
-                    st.info("No specific topic clusters detected. See the Full Transcript tab.")
+                    st.info("No key discussion points identified.")
 
-            # Tab 3: Action Items
-            with tabs[2]:
-                if summary["action_items"]:
-                    for item in summary["action_items"]:
-                        st.markdown(
-                            f"<div class='action-card'>☑️ {html.escape(item)}</div>",
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.info("No explicit action items were assigned in this recording.")
-
-            # Tab 4: Deadlines
+            # Tab 4: Agreed Decisions
             with tabs[3]:
-                if summary["deadlines"]:
-                    for dl in summary["deadlines"]:
+                if meeting_intel and meeting_intel.decisions:
+                    st.markdown("#### 🤝 Agreed Decisions & Consensus")
+                    for dec in meeting_intel.decisions:
                         st.markdown(
-                            f"<div class='deadline-card'>⏰ {html.escape(dl)}</div>",
+                            f"""<div class="decision-card">
+                                <strong>✔️ Decision:</strong> {html.escape(dec)}
+                            </div>""",
                             unsafe_allow_html=True,
                         )
+                elif m1_summary.get("deadlines"):
+                    st.markdown("#### ⏰ Key Deadlines & Milestones")
+                    for dl in m1_summary["deadlines"]:
+                        st.markdown(f"<div class='decision-card'>⏰ {html.escape(dl)}</div>", unsafe_allow_html=True)
                 else:
-                    st.info("No explicit deadlines or dates were mentioned.")
+                    st.info("No formal decisions or agreements detected.")
 
             # Tab 5: Stats & Speakers
             with tabs[4]:
-                s = summary["stats"]
+                s = m1_summary["stats"]
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Word Count", s["word_count"])
                 c2.metric("Sentences", s["sentence_count"])
@@ -462,7 +509,7 @@ if uploaded_file is not None:
 
                 if reference_text.strip():
                     st.markdown("---")
-                    st.markdown("#### 🎯 Accuracy Evaluation (Task 5)")
+                    st.markdown("#### 🎯 Accuracy Evaluation (Milestone 1 Task 5)")
                     metrics = calculate_wer_and_metrics(reference_text.strip(), raw_text)
 
                     mc1, mc2, mc3 = st.columns(3)
@@ -498,30 +545,37 @@ if uploaded_file is not None:
 
             summary_lines = [
                 "=" * 60,
-                "          EXECUTIVE MEETING SUMMARY",
+                "          EXECUTIVE MEETING INTELLIGENCE REPORT",
                 "=" * 60,
                 f"File : {uploaded_file.name}",
                 f"Date : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"Model: {model_name}",
-                f"Diarization: {'Enabled (' + str(num_speakers_detected) + ' speakers)' if enable_diarization else 'Disabled'}",
+                f"ASR Model : Whisper {model_name}",
+                f"Intelligence Engine : {'Milestone 2 (Gemini LLM)' if meeting_intel else 'Milestone 1 (Heuristic)'}",
+                f"Diarization : {'Enabled (' + str(num_speakers_detected) + ' speakers)' if enable_diarization else 'Disabled'}",
                 "",
-                "MAIN OBJECTIVE & OVERVIEW:",
-                f"  {summary['overview']}",
-                "",
-                "TOPICS DISCUSSED:",
+                "EXECUTIVE SUMMARY:",
+                f"  {summary_text}",
             ]
-            for group in summary["topic_groups"]:
-                summary_lines.append(f"\n  [{group['topic'].upper()}]")
-                for p in group["points"]:
-                    summary_lines.append(f"     • {p}")
-            if summary["action_items"]:
-                summary_lines.append("\nACTION ITEMS & DELIVERABLES:")
-                for item in summary["action_items"]:
-                    summary_lines.append(f"  ☑ {item}")
-            if summary["deadlines"]:
-                summary_lines.append("\nDEADLINES & KEY MILESTONES:")
-                for dl in summary["deadlines"]:
-                    summary_lines.append(f"  ⏰ {dl}")
+
+            if participants_list:
+                summary_lines.extend(["", "PARTICIPANTS:", "  " + ", ".join(participants_list)])
+
+            if meeting_intel and meeting_intel.key_points:
+                summary_lines.extend(["", "KEY DISCUSSION POINTS:"])
+                for pt in meeting_intel.key_points:
+                    summary_lines.append(f"  • {pt}")
+
+            if meeting_intel and meeting_intel.decisions:
+                summary_lines.extend(["", "AGREED DECISIONS:"])
+                for dec in meeting_intel.decisions:
+                    summary_lines.append(f"  ✔️ {dec}")
+
+            if meeting_intel and meeting_intel.action_items:
+                summary_lines.extend(["", "ACTION ITEMS & DELIVERABLES:"])
+                for item in meeting_intel.action_items:
+                    dl = f" (Deadline: {item.deadline})" if item.deadline else ""
+                    summary_lines.append(f"  ☑ [{item.priority}] {item.task} — Assignee: {item.assignee}{dl} [Status: {item.status}]")
+
             summary_doc = "\n".join(summary_lines)
 
             # ── Auto-save ─────────────────────────────────────────────────────
@@ -545,6 +599,8 @@ if uploaded_file is not None:
                             "speaker_count": speaker_stats.get("speaker_count", 1),
                             "speakers": speaker_stats.get("speakers", {}),
                             "total_speech_time_sec": speaker_stats.get("total_speech_time_sec", 0.0),
+                            "participants": participants_list,
+                            "action_items_count": len(meeting_intel.action_items) if meeting_intel else 0,
                         }, indent=2),
                         encoding="utf-8",
                     )
@@ -566,7 +622,7 @@ if uploaded_file is not None:
                 st.download_button(
                     label="⬇️ Executive Summary (.txt)",
                     data=summary_doc,
-                    file_name=f"{stem}_summary.txt",
+                    file_name=f"{stem}_executive_summary.txt",
                     mime="text/plain",
                 )
             if enable_diarization and speaker_transcript_doc:
@@ -588,7 +644,7 @@ if uploaded_file is not None:
 
         except Exception as exc:
             logger.exception("Unexpected error: %s", exc)
-            st.error("❌ An unexpected error occurred. Please check that FFmpeg is installed and try again.")
+            st.error(f"❌ An unexpected error occurred: {exc}")
 
         finally:
             for p in [tmp_input, tmp_wav]:
