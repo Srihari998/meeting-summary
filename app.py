@@ -345,6 +345,22 @@ if start_button and uploaded_file is not None:
             summarizer = MeetingSummarizer()
             m1_summary = summarizer.summarize(raw_text)
 
+            # ── Stage 9: Speaker Role & Designation Inference ─────────────────
+            distinct_speakers = [t["speaker"] for t in aligned_turns] if aligned_turns else []
+            if meeting_intel and meeting_intel.participants:
+                for p in meeting_intel.participants:
+                    if p not in distinct_speakers:
+                        distinct_speakers.append(p)
+
+            speaker_roles: dict[str, str] = {}
+            if distinct_speakers or raw_text:
+                with st.spinner("💼 Inferring participant roles & designations…"):
+                    try:
+                        from milestone2.participants import infer_speaker_roles
+                        speaker_roles = infer_speaker_roles(raw_text, distinct_speakers)
+                    except Exception as r_err:
+                        logger.warning("Role inference note: %s", r_err)
+
             # ── Display Results ───────────────────────────────────────────────
             st.markdown("---")
             st.subheader("📋 Meeting Intelligence Dashboard")
@@ -365,11 +381,16 @@ if start_button and uploaded_file is not None:
                 unsafe_allow_html=True,
             )
 
-            # Participants Pills
-            participants_list = meeting_intel.participants if (meeting_intel and meeting_intel.participants) else []
+            # Participants with Roles Pills
+            participants_list = meeting_intel.participants if (meeting_intel and meeting_intel.participants) else distinct_speakers
             if participants_list:
-                pills_html = "".join(f"<span class='participant-pill'>👤 {html.escape(p)}</span>" for p in participants_list)
-                st.markdown(f"**👥 Meeting Participants:** {pills_html}", unsafe_allow_html=True)
+                pills_html_list = []
+                for p in participants_list:
+                    p_role = speaker_roles.get(p, speaker_roles.get(p.strip(":"), "Team Member / Coworker"))
+                    pills_html_list.append(
+                        f"<span class='participant-pill'>👤 <strong>{html.escape(p)}</strong> <span style='opacity:0.85; font-size:0.82rem;'>({html.escape(p_role)})</span></span>"
+                    )
+                st.markdown(f"**👥 Meeting Participants & Roles:** " + "".join(pills_html_list), unsafe_allow_html=True)
                 st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
 
             # Tab setup
@@ -386,10 +407,11 @@ if start_button and uploaded_file is not None:
             # Tab 1: Speaker Transcript
             with tabs[0]:
                 if enable_diarization and aligned_turns:
-                    st.markdown(f"**🗣️ Conversation Flow ({len(aligned_turns)} speaker turns):**")
+                    st.markdown(f"**🗣️ Conversation Flow with Inferred Roles ({len(aligned_turns)} turns):**")
                     for turn in aligned_turns:
                         spk = turn["speaker"]
                         spk_id = turn.get("speaker_id", 0)
+                        spk_role = speaker_roles.get(spk, speaker_roles.get(f"Speaker {spk_id + 1}", "Team Member / Coworker"))
                         badge_class = f"speaker-badge-{(spk_id % 4) + 1}"
                         ts_str = turn.get("timestamp_str", f"[{turn['start']:.1f}s - {turn['end']:.1f}s]")
                         text_esc = html.escape(turn["text"])
@@ -397,6 +419,7 @@ if start_button and uploaded_file is not None:
                         st.markdown(
                             f"""<div class="speaker-turn-card">
                                 <span class="{badge_class}">{html.escape(spk)}</span>
+                                <span style="background:#F1F5F9; color:#334155; font-weight:600; padding:2px 8px; border-radius:6px; font-size:0.82rem; margin-left:6px;">💼 {html.escape(spk_role)}</span>
                                 <small style="color:#64748B; margin-left:8px;">{html.escape(ts_str)}</small>
                                 <div style="margin-top:6px; color:#1E293B; font-size:.98rem;">{text_esc}</div>
                             </div>""",
@@ -413,9 +436,11 @@ if start_button and uploaded_file is not None:
                     # Render structured interactive table
                     table_rows = []
                     for item in meeting_intel.action_items:
+                        a_role = speaker_roles.get(item.assignee, "")
+                        assignee_label = f"{item.assignee} ({a_role})" if a_role and a_role != "Team Member / Coworker" else item.assignee
                         table_rows.append({
                             "Task Description": item.task,
-                            "Assignee": item.assignee,
+                            "Assignee": assignee_label,
                             "Deadline": item.deadline or "—",
                             "Priority": item.priority,
                             "Status": item.status,
@@ -426,6 +451,8 @@ if start_button and uploaded_file is not None:
                     st.markdown("##### 📌 Detailed Task Cards")
                     for item in meeting_intel.action_items:
                         p_class = f"priority-{item.priority.lower()}"
+                        a_role = speaker_roles.get(item.assignee, "")
+                        role_tag = f" <small style='color:#64748B;'>({html.escape(a_role)})</small>" if a_role else ""
                         st.markdown(
                             f"""<div class="action-card">
                                 <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -433,7 +460,7 @@ if start_button and uploaded_file is not None:
                                     <span class="{p_class}">{html.escape(item.priority)}</span>
                                 </div>
                                 <div style="margin-top:4px; font-size:0.88rem; color:#475569;">
-                                    👤 <strong>Assignee:</strong> {html.escape(item.assignee)} &nbsp;|&nbsp; 
+                                    👤 <strong>Assignee:</strong> {html.escape(item.assignee)}{role_tag} &nbsp;|&nbsp; 
                                     ⏰ <strong>Deadline:</strong> {html.escape(item.deadline or 'Not specified')} &nbsp;|&nbsp; 
                                     🔄 <strong>Status:</strong> {html.escape(item.status)}
                                 </div>
@@ -496,13 +523,15 @@ if start_button and uploaded_file is not None:
 
                 if enable_diarization and speaker_stats.get("speakers"):
                     st.markdown("---")
-                    st.markdown(f"#### 👥 Speaker Analytics ({speaker_stats['speaker_count']} Speakers Detected)")
+                    st.markdown(f"#### 👥 Speaker Analytics & Roles ({speaker_stats['speaker_count']} Speakers Detected)")
                     spk_cols = st.columns(min(4, max(1, speaker_stats["speaker_count"])))
                     for idx, (spk_name, s_data) in enumerate(speaker_stats["speakers"].items()):
                         col_idx = idx % len(spk_cols)
+                        r = speaker_roles.get(spk_name, "")
+                        label_str = f"{spk_name} ({r})" if r else spk_name
                         with spk_cols[col_idx]:
                             st.metric(
-                                label=spk_name,
+                                label=label_str,
                                 value=f"{s_data['percentage']}%",
                                 delta=f"{s_data['speaking_time_formatted']} ({s_data['turn_count']} turns)",
                                 delta_color="off",
@@ -544,6 +573,17 @@ if start_button and uploaded_file is not None:
             stem = Path(uploaded_file.name).stem
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+            # Format role-annotated speaker transcript document
+            if enable_diarization and aligned_turns:
+                spk_annotated_lines = []
+                for turn in aligned_turns:
+                    spk = turn["speaker"]
+                    spk_id = turn.get("speaker_id", 0)
+                    spk_role = speaker_roles.get(spk, speaker_roles.get(f"Speaker {spk_id + 1}", "Team Member / Coworker"))
+                    ts_str = turn.get("timestamp_str", f"[{turn['start']:.1f}s - {turn['end']:.1f}s]")
+                    spk_annotated_lines.append(f"{spk} [{spk_role}] {ts_str}:\n  {turn['text']}\n")
+                speaker_transcript_doc = "\n".join(spk_annotated_lines)
+
             summary_lines = [
                 "=" * 60,
                 "          EXECUTIVE MEETING INTELLIGENCE REPORT",
@@ -559,7 +599,11 @@ if start_button and uploaded_file is not None:
             ]
 
             if participants_list:
-                summary_lines.extend(["", "PARTICIPANTS:", "  " + ", ".join(participants_list)])
+                part_lines = []
+                for p in participants_list:
+                    r = speaker_roles.get(p, "")
+                    part_lines.append(f"{p} ({r})" if r else p)
+                summary_lines.extend(["", "PARTICIPANTS & ROLES:", "  " + ", ".join(part_lines)])
 
             if meeting_intel and meeting_intel.key_points:
                 summary_lines.extend(["", "KEY DISCUSSION POINTS:"])
