@@ -194,22 +194,22 @@ with st.sidebar:
                 help="Optional: Enter HF token if you wish to use the pyannote.audio pipeline instead of the built-in local offline engine.",
             )
 
-    st.markdown("### 🧠 AI Intelligence (Milestone 2)")
+    st.markdown("### 🧠 AI Intelligence")
     enable_milestone2 = st.checkbox(
-        "Enable Milestone 2 LLM Extraction",
+        "Enable AI Meeting Intelligence (LLM Extraction)",
         value=MILESTONE2_AVAILABLE,
         disabled=not MILESTONE2_AVAILABLE,
-        help="Uses Google Gemini to extract executive summary, key points, decisions, participants, and action items table.",
+        help="Uses Google Gemini to extract executive summary, key discussion points, decisions, participants with roles, and action items table.",
     )
     if not MILESTONE2_AVAILABLE:
-        st.caption("⚠️ Milestone 2 package not detected. Using Milestone 1 heuristic summarizer.")
+        st.caption("⚠️ AI LLM service package not detected. Using local heuristic summarizer.")
 
     st.markdown("### 💾 Export & Auto-save")
     auto_save = st.checkbox("Auto-save outputs to `transcripts/`", value=True)
 
     st.markdown("---")
-    st.caption("🎙️ **Milestone 1 + 2 Integrated Pipeline**")
-    st.caption("✅ OpenAI Whisper ASR | ✅ ResNet Voice Clustering | ✅ Gemini LLM Intelligence")
+    st.caption("🎙️ **Intelligent Meeting Transcription & Analytics**")
+    st.caption("✅ OpenAI Whisper ASR | ✅ Voice Clustering & Roles | ✅ Gemini AI Intelligence")
 
 # ── Main Header ───────────────────────────────────────────────────────────────
 st.title("🎙️ Meeting Summarizer & Action Item Extraction")
@@ -322,26 +322,26 @@ if start_button and uploaded_file is not None:
                     speaker_transcript_doc = format_speaker_transcript(aligned_turns)
                 st.success("✅ Speaker alignment completed")
 
-            # ── Stage 8: Milestone 2 Meeting Intelligence & LLM Extraction ───
+            # ── Stage 8: AI Meeting Intelligence & Action Items Extraction ────
             meeting_intel: Optional[MeetingIntelligence] = None
             m1_summary: dict[str, Any] = {}
 
             if enable_milestone2 and MILESTONE2_AVAILABLE:
-                with st.spinner("✨ Extracting Meeting Intelligence via Gemini (Milestone 2)…"):
+                with st.spinner("✨ Extracting Meeting Intelligence & Action Items via AI…"):
                     try:
                         meeting_intel = process_meeting(raw_text)
-                        st.success("✅ Milestone 2 Meeting Intelligence extracted successfully")
+                        st.success("✅ Meeting Intelligence & Action Items extracted successfully")
                     except InvalidInputError as exc:
-                        logger.warning("Milestone 2 InvalidInputError: %s", exc)
-                        st.warning(f"⚠️ Milestone 2 Input Notice: {exc}")
+                        logger.warning("Input Notice: %s", exc)
+                        st.warning(f"⚠️ Input Notice: {exc}")
                     except LLMExtractionError as exc:
-                        logger.warning("Milestone 2 LLMExtractionError: %s", exc)
-                        st.warning(f"⚠️ Milestone 2 LLM Extraction Notice: {exc}")
+                        logger.warning("LLM Extraction Notice: %s", exc)
+                        st.warning(f"⚠️ LLM Extraction Notice: {exc}")
                     except Exception as exc:
-                        logger.error("Milestone 2 error: %s", exc, exc_info=True)
-                        st.warning(f"⚠️ Milestone 2 processing encountered an issue: {exc}")
+                        logger.error("AI intelligence extraction error: %s", exc, exc_info=True)
+                        st.warning(f"⚠️ AI intelligence extraction encountered an issue: {exc}")
 
-            # Heuristic Milestone 1 fallback if needed
+            # Fast Heuristic fallback if needed
             summarizer = MeetingSummarizer()
             m1_summary = summarizer.summarize(raw_text)
 
@@ -368,7 +368,7 @@ if start_button and uploaded_file is not None:
             # Overview Card
             summary_text = meeting_intel.summary if meeting_intel else m1_summary["overview"]
             overview_html = html.escape(summary_text)
-            engine_badge = "Gemini LLM (Milestone 2)" if meeting_intel else "Heuristic Classifier (Milestone 1)"
+            engine_badge = "Gemini AI Engine" if meeting_intel else "Fast Heuristic Engine"
             
             st.markdown(
                 f"""<div class="overview-card">
@@ -428,26 +428,49 @@ if start_button and uploaded_file is not None:
                 else:
                     st.text_area("Transcript", value=raw_text, height=350, label_visibility="collapsed")
 
-            # Tab 2: Action Items Table (Milestone 2)
+            # Tab 2: Action Items Table (Responsive & Word-Wrapped)
             with tabs[1]:
                 if meeting_intel and meeting_intel.action_items:
                     st.markdown(f"#### ✅ Extracted Action Items ({len(meeting_intel.action_items)} Tasks)")
                     
-                    # Render structured interactive table
-                    table_rows = []
-                    for item in meeting_intel.action_items:
+                    # Full-width responsive table with automatic word wrapping (no sentence clipping)
+                    table_html_rows = []
+                    for idx, item in enumerate(meeting_intel.action_items, start=1):
                         a_role = speaker_roles.get(item.assignee, "")
-                        assignee_label = f"{item.assignee} ({a_role})" if a_role and a_role != "Team Member / Coworker" else item.assignee
-                        table_rows.append({
-                            "Task Description": item.task,
-                            "Assignee": assignee_label,
-                            "Deadline": item.deadline or "—",
-                            "Priority": item.priority,
-                            "Status": item.status,
-                        })
-                    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+                        role_tag = f"<br><small style='color:#64748B;'>({html.escape(a_role)})</small>" if a_role and a_role != "Team Member / Coworker" else ""
+                        p_class = f"priority-{item.priority.lower()}"
+                        
+                        table_html_rows.append(
+                            f"""<tr style="border-bottom: 1px solid #E2E8F0;">
+                                <td style="padding: 12px 14px; font-weight:600; color:#0F172A; line-height:1.5; word-break:break-word;">{idx}. {html.escape(item.task)}</td>
+                                <td style="padding: 12px 14px; color:#1E293B; word-break:break-word;">👤 {html.escape(item.assignee)}{role_tag}</td>
+                                <td style="padding: 12px 14px; color:#475569; word-break:break-word;">⏰ {html.escape(item.deadline or '—')}</td>
+                                <td style="padding: 12px 14px;"><span class="{p_class}">{html.escape(item.priority)}</span></td>
+                                <td style="padding: 12px 14px; color:#334155; font-size:0.88rem;">{html.escape(item.status)}</td>
+                            </tr>"""
+                        )
 
-                    # Card view
+                    st.markdown(
+                        f"""<div style="overflow-x:auto; width:100%; margin-bottom:24px; border:1px solid #CBD5E1; border-radius:10px; background:#FFFFFF;">
+                            <table style="width:100%; border-collapse:collapse; font-size:0.95rem; text-align:left;">
+                                <thead>
+                                    <tr style="background:#F8FAFC; border-bottom:2px solid #CBD5E1; color:#1E293B; font-weight:700;">
+                                        <th style="padding:12px 14px; width:45%;">Task Description</th>
+                                        <th style="padding:12px 14px; width:22%;">Assignee</th>
+                                        <th style="padding:12px 14px; width:15%;">Deadline</th>
+                                        <th style="padding:12px 14px; width:10%;">Priority</th>
+                                        <th style="padding:12px 14px; width:8%;">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {"".join(table_html_rows)}
+                                </tbody>
+                            </table>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+                    # Detailed Task Cards below
                     st.markdown("##### 📌 Detailed Task Cards")
                     for item in meeting_intel.action_items:
                         p_class = f"priority-{item.priority.lower()}"
@@ -455,11 +478,11 @@ if start_button and uploaded_file is not None:
                         role_tag = f" <small style='color:#64748B;'>({html.escape(a_role)})</small>" if a_role else ""
                         st.markdown(
                             f"""<div class="action-card">
-                                <div style="display:flex; justify-content:space-between; align-items:center;">
-                                    <strong>☑️ {html.escape(item.task)}</strong>
-                                    <span class="{p_class}">{html.escape(item.priority)}</span>
+                                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                                    <strong style="font-size:1rem; line-height:1.4;">☑️ {html.escape(item.task)}</strong>
+                                    <span class="{p_class}" style="margin-left:12px; white-space:nowrap;">{html.escape(item.priority)}</span>
                                 </div>
-                                <div style="margin-top:4px; font-size:0.88rem; color:#475569;">
+                                <div style="margin-top:8px; font-size:0.88rem; color:#475569;">
                                     👤 <strong>Assignee:</strong> {html.escape(item.assignee)}{role_tag} &nbsp;|&nbsp; 
                                     ⏰ <strong>Deadline:</strong> {html.escape(item.deadline or 'Not specified')} &nbsp;|&nbsp; 
                                     🔄 <strong>Status:</strong> {html.escape(item.status)}
@@ -539,7 +562,7 @@ if start_button and uploaded_file is not None:
 
                 if reference_text.strip():
                     st.markdown("---")
-                    st.markdown("#### 🎯 Accuracy Evaluation (Milestone 1 Task 5)")
+                    st.markdown("#### 🎯 Accuracy Evaluation (WER Benchmark)")
                     metrics = calculate_wer_and_metrics(reference_text.strip(), raw_text)
 
                     mc1, mc2, mc3 = st.columns(3)
@@ -591,7 +614,7 @@ if start_button and uploaded_file is not None:
                 f"File : {uploaded_file.name}",
                 f"Date : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 f"ASR Model : Whisper {model_name}",
-                f"Intelligence Engine : {'Milestone 2 (Gemini LLM)' if meeting_intel else 'Milestone 1 (Heuristic)'}",
+                f"Intelligence Engine : {'Gemini AI' if meeting_intel else 'Fast Heuristic'}",
                 f"Diarization : {'Enabled (' + str(num_speakers_detected) + ' speakers)' if enable_diarization else 'Disabled'}",
                 "",
                 "EXECUTIVE SUMMARY:",
