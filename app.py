@@ -179,6 +179,7 @@ with st.sidebar:
     )
 
     expected_speakers_opt = "Auto"
+    hf_token = ""
     if enable_diarization:
         expected_speakers_opt = st.selectbox(
             "Expected Speaker Count",
@@ -186,6 +187,12 @@ with st.sidebar:
             index=0,
             help="Auto: discovers speaker count automatically. Or constrain to a known number.",
         )
+        with st.expander("⚙️ Advanced Diarization (PyAnnote)"):
+            hf_token = st.text_input(
+                "Hugging Face Token (Optional)",
+                type="password",
+                help="Optional: Enter HF token if you wish to use the pyannote.audio pipeline instead of the built-in local offline engine.",
+            )
 
     st.markdown("### 🧠 AI Intelligence (Milestone 2)")
     enable_milestone2 = st.checkbox(
@@ -196,12 +203,6 @@ with st.sidebar:
     )
     if not MILESTONE2_AVAILABLE:
         st.caption("⚠️ Milestone 2 package not detected. Using Milestone 1 heuristic summarizer.")
-
-    hf_token = st.text_input(
-        "Hugging Face Token (Optional)",
-        type="password",
-        help="Optional: Enter HF token to use pyannote pipeline. Defaults to local offline d-vector engine.",
-    )
 
     st.markdown("### 💾 Export & Auto-save")
     auto_save = st.checkbox("Auto-save outputs to `transcripts/`", value=True)
