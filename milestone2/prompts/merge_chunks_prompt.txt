@@ -1,0 +1,6 @@
+You are an AI meeting analyst. Below are chronological section summaries of a long meeting transcript.
+Combine these section summaries into a single comprehensive, coherent meeting transcript-equivalent text.
+Preserve all details, speaker context, decisions, discussion topics, participant names, and action items across all sections.
+
+SECTION SUMMARIES:
+{summaries}

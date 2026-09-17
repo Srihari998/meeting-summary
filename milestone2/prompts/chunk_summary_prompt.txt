@@ -1,0 +1,6 @@
+You are an AI meeting analyst. Summarize the following section/chunk of a long meeting transcript.
+Preserve all key discussion points, decisions made, participant names, tasks, assignees, deadlines, and priorities mentioned.
+Provide a clear, dense factual summary of this section.
+
+TRANSCRIPT CHUNK:
+{chunk}

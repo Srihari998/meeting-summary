@@ -1,0 +1,18 @@
+You previously generated a response that was supposed to be a valid JSON object matching the MeetingIntelligence schema, but it failed validation.
+
+VALIDATION ERROR(S):
+{error_message}
+
+PREVIOUS OUTPUT:
+{raw_output}
+
+INSTRUCTIONS:
+1. Fix all validation and syntax errors identified above.
+2. Ensure the output strictly conforms to the required schema:
+   - "summary": string
+   - "key_points": list of strings
+   - "decisions": list of strings
+   - "action_items": list of objects with "task" (string), "assignee" (string), "deadline" (string or null), "priority" ("High", "Medium", or "Low"), and "status" (string)
+   - "participants": list of strings
+3. Do NOT include any extra fields not defined in the schema.
+4. Output ONLY the corrected, valid JSON object with no explanations, conversational text, or preamble.
