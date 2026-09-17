@@ -8,7 +8,7 @@ Handles normalization, deduplication, and assignee reconciliation:
 """
 
 import re
-from typing import List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 try:
     from schemas import ActionItem
 except ImportError:
