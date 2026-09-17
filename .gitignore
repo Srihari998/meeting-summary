@@ -14,6 +14,9 @@ __pycache__/
 *.db
 *.sqlite3
 
+# ChromaDB vector store (Milestone 3 — rebuild-able from SQLite)
+chroma_db/
+
 # Transcripts auto-save folder (user-generated content)
 transcripts/
 

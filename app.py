@@ -67,6 +67,18 @@ except Exception as _m2_err:
     MeetingIntelligence = None
     ActionItem = None
 
+# Milestone 3 Imports
+try:
+    from milestone3.indexing_pipeline import index_meeting, index_all_meetings, IndexingResult
+    from milestone3.semantic_search_service import SemanticSearchService
+    from milestone3.rag_service import RAGService
+    from milestone3.schemas import SearchRequest, RAGRequest
+    from milestone3.vector_store_service import VectorStoreService
+    MILESTONE3_AVAILABLE = True
+except Exception as _m3_err:
+    MILESTONE3_AVAILABLE = False
+    _m3_err_msg = str(_m3_err)
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -206,6 +218,35 @@ with st.sidebar:
 
     st.markdown("### 💾 Export & Auto-save")
     auto_save = st.checkbox("Auto-save outputs to `transcripts/`", value=True)
+
+    # ── Milestone 3: Knowledge Base ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🔍 Meeting Knowledge Base")
+    if MILESTONE3_AVAILABLE:
+        try:
+            _vstore_sidebar = VectorStoreService()
+            _total_vectors = _vstore_sidebar.count()
+        except Exception:
+            _total_vectors = 0
+        st.caption(f"📊 **{_total_vectors} indexed chunks** in knowledge base")
+
+        if st.button("📥 Index All Past Meetings", help="Embeds and indexes all meetings from the database into the semantic search engine."):
+            with st.spinner("Indexing all meetings into knowledge base…"):
+                try:
+                    _idx_result = index_all_meetings()
+                    if _idx_result.chunks_indexed > 0:
+                        st.success(
+                            f"✅ Indexed {_idx_result.chunks_indexed} new chunks from "
+                            f"{len(_idx_result.meeting_ids_processed)} meeting(s).",
+                        )
+                    elif _idx_result.chunks_skipped > 0:
+                        st.info(f"ℹ️ All {_idx_result.chunks_skipped} chunks already up to date.")
+                    if _idx_result.errors:
+                        st.warning(f"⚠️ {len(_idx_result.errors)} meeting(s) had errors: {_idx_result.errors[0]}")
+                except Exception as _idx_exc:
+                    st.error(f"❌ Indexing failed: {_idx_exc}")
+    else:
+        st.caption("⚠️ Semantic search unavailable. Install chromadb to enable.")
 
     st.markdown("---")
     st.caption("🎙️ **Intelligent Meeting Transcription & Analytics**")
@@ -401,6 +442,8 @@ if start_button and uploaded_file is not None:
                 "🤝 Agreed Decisions",
                 "📊 Stats & Speakers",
                 "📝 Raw Transcript",
+                "🔍 Semantic Search",
+                "💬 Ask a Question",
             ]
             tabs = st.tabs(tab_titles)
 
@@ -591,6 +634,171 @@ if start_button and uploaded_file is not None:
                                 f"**[{seg.get('start', 0):.1f}s → {seg.get('end', 0):.1f}s]** "
                                 f"{html.escape(seg.get('text', '').strip())}"
                             )
+
+            # ── Auto-index current meeting into vector store ───────────────────
+            if MILESTONE3_AVAILABLE and meeting_intel:
+                try:
+                    from milestone3.meeting_repository import MeetingRepository
+                    _repo = MeetingRepository()
+                    _all_ids = _repo.list_meeting_ids()
+                    if _all_ids:
+                        # The most recently saved meeting is the one just processed
+                        # (list_meeting_ids returns in insertion order from DB)
+                        # Use the last inserted meeting by querying newest
+                        _latest_meetings = _repo.get_all_meetings()
+                        if _latest_meetings:
+                            _current_mid = _latest_meetings[0].id  # ordered desc by created_at
+                            _idx = index_meeting(_current_mid)
+                            if _idx.chunks_indexed > 0:
+                                st.toast(f"🔍 Indexed {_idx.chunks_indexed} chunks into knowledge base", icon="✅")
+                            elif _idx.chunks_skipped > 0:
+                                st.toast("🔍 Meeting already in knowledge base", icon="ℹ️")
+                except Exception as _auto_idx_err:
+                    logger.warning("Auto-indexing failed: %s", _auto_idx_err)
+
+            # Tab 7: Semantic Search
+            with tabs[6]:
+                if not MILESTONE3_AVAILABLE:
+                    st.warning("⚠️ Semantic search requires the `chromadb` package. Run `pip install chromadb`.")
+                else:
+                    st.markdown("#### 🔍 Search Meeting Knowledge Base")
+                    st.caption(
+                        "Search all indexed meetings using natural language. "
+                        "Results are ranked by semantic relevance. Index meetings first using the sidebar button."
+                    )
+
+                    _search_col1, _search_col2 = st.columns([4, 1])
+                    with _search_col1:
+                        _search_query = st.text_input(
+                            "Search query",
+                            placeholder="e.g. 'budget decisions for Q4' or 'API integration deadline'",
+                            label_visibility="collapsed",
+                        )
+                    with _search_col2:
+                        _search_top_k = st.number_input("Top K", min_value=1, max_value=20, value=5)
+
+                    _src_filter = st.selectbox(
+                        "Filter by content type (optional)",
+                        options=["All", "transcript", "summary", "decision", "action_item"],
+                        index=0,
+                    )
+
+                    if st.button("🔍 Search", key="btn_search"):
+                        if not _search_query.strip():
+                            st.warning("Please enter a search query.")
+                        else:
+                            with st.spinner("Searching meeting knowledge base…"):
+                                try:
+                                    _s_svc = SemanticSearchService()
+                                    _s_req = SearchRequest(
+                                        query=_search_query,
+                                        top_k=int(_search_top_k),
+                                        source_type=None if _src_filter == "All" else _src_filter,
+                                    )
+                                    _s_results = _s_svc.search(_s_req)
+
+                                    if not _s_results:
+                                        st.info("No results found. Make sure meetings are indexed via the sidebar button.")
+                                    else:
+                                        latency = _s_results[0].search_latency_ms if _s_results else 0
+                                        status_color = "#16A34A" if latency < 3000 else "#DC2626"
+                                        st.markdown(
+                                            f"**{len(_s_results)} result(s)** — "
+                                            f"<span style='color:{status_color}; font-weight:600;'>⏱ {latency:.0f} ms</span>",
+                                            unsafe_allow_html=True,
+                                        )
+                                        for rank_i, _sr in enumerate(_s_results, 1):
+                                            score_pct = int(_sr.relevance_score * 100)
+                                            score_color = "#16A34A" if _sr.relevance_score > 0.7 else "#D97706" if _sr.relevance_score > 0.4 else "#6B7280"
+                                            _badge_map = {
+                                                "transcript": ("📄", "#DBEAFE", "#1E40AF"),
+                                                "summary": ("📋", "#D1FAE5", "#065F46"),
+                                                "decision": ("✔️", "#EDE9FE", "#4C1D95"),
+                                                "action_item": ("☑️", "#FEF3C7", "#92400E"),
+                                            }
+                                            _icon, _bg, _fg = _badge_map.get(_sr.source_type, ("📄", "#F1F5F9", "#334155"))
+                                            st.markdown(
+                                                f"""<div style="border:1px solid #E2E8F0; border-radius:10px; padding:14px 18px; margin-bottom:12px; background:#FFFFFF;">
+                                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                                        <div>
+                                                            <span style="font-weight:700; color:#1E293B;">#{rank_i}</span>
+                                                            <span style="background:{_bg}; color:{_fg}; font-size:0.82rem; font-weight:600; padding:2px 8px; border-radius:6px; margin-left:8px;">{_icon} {html.escape(_sr.source_type)}</span>
+                                                        </div>
+                                                        <div>
+                                                            <span style="color:{score_color}; font-weight:700; font-size:0.9rem;">{score_pct}% match</span>
+                                                            <span style="color:#94A3B8; font-size:0.8rem; margin-left:10px;">Meeting: {html.escape(_sr.meeting_id[:16])}…</span>
+                                                        </div>
+                                                    </div>
+                                                    <div style="color:#334155; font-size:0.95rem; line-height:1.55;">{html.escape(_sr.content[:600])}</div>
+                                                </div>""",
+                                                unsafe_allow_html=True,
+                                            )
+                                except Exception as _srch_exc:
+                                    st.error(f"❌ Search failed: {_srch_exc}")
+
+            # Tab 8: RAG — Ask a Question
+            with tabs[7]:
+                if not MILESTONE3_AVAILABLE:
+                    st.warning("⚠️ RAG requires the `chromadb` package. Run `pip install chromadb`.")
+                else:
+                    st.markdown("#### 💬 Ask a Question About Your Meetings")
+                    st.caption(
+                        "Ask any natural-language question. The AI retrieves relevant meeting content and "
+                        "answers based only on your stored meetings — no fabrication."
+                    )
+
+                    _rag_question = st.text_area(
+                        "Your question",
+                        placeholder="e.g. 'Who is responsible for the backend API?' or 'What decisions were made about the product launch?'",
+                        height=90,
+                        label_visibility="collapsed",
+                    )
+                    _rag_top_k = st.slider("Context chunks to retrieve", min_value=1, max_value=10, value=5)
+
+                    if st.button("💬 Get Answer", key="btn_rag"):
+                        if not _rag_question.strip():
+                            st.warning("Please enter a question.")
+                        else:
+                            with st.spinner("Retrieving context and generating grounded answer…"):
+                                try:
+                                    _rag_svc = RAGService()
+                                    _rag_resp = _rag_svc.answer(RAGRequest(question=_rag_question, top_k=_rag_top_k))
+
+                                    # Answer card
+                                    st.markdown(
+                                        f"""<div style="background:#F0FDF4; border-left:4px solid #16A34A; border-radius:0 10px 10px 0; padding:16px 20px; margin-bottom:20px;">
+                                            <div style="font-weight:700; color:#14532D; margin-bottom:8px;">🤖 Answer <span style="font-size:0.8rem; font-weight:400; color:#6B7280;">({_rag_resp.latency_ms:.0f} ms)</span></div>
+                                            <div style="color:#1E293B; font-size:1rem; line-height:1.6;">{html.escape(_rag_resp.answer)}</div>
+                                        </div>""",
+                                        unsafe_allow_html=True,
+                                    )
+
+                                    # Source meeting IDs
+                                    if _rag_resp.meeting_ids:
+                                        _mid_pills = "".join(
+                                            f"<span style='background:#E0E7FF; color:#3730A3; font-weight:600; font-size:0.82rem; padding:3px 10px; border-radius:9999px; margin-right:6px;'>📋 {html.escape(mid[:20])}</span>"
+                                            for mid in _rag_resp.meeting_ids
+                                        )
+                                        st.markdown(
+                                            f"**🔗 Sources from meetings:** {_mid_pills}",
+                                            unsafe_allow_html=True,
+                                        )
+
+                                    # Retrieved context chunks (collapsible)
+                                    if _rag_resp.sources:
+                                        with st.expander(f"📎 View {len(_rag_resp.sources)} retrieved context chunk(s)"):
+                                            for _ci, _cs in enumerate(_rag_resp.sources, 1):
+                                                st.markdown(
+                                                    f"""<div style="border:1px solid #E2E8F0; border-radius:8px; padding:12px 16px; margin-bottom:10px; background:#F8FAFC;">
+                                                        <div style="font-size:0.82rem; color:#64748B; margin-bottom:6px;">
+                                                            Chunk {_ci} · {html.escape(_cs.source_type)} · Meeting: {html.escape(_cs.meeting_id[:20])} · {int(_cs.relevance_score * 100)}% match
+                                                        </div>
+                                                        <div style="color:#334155; font-size:0.9rem;">{html.escape(_cs.content[:500])}</div>
+                                                    </div>""",
+                                                    unsafe_allow_html=True,
+                                                )
+                                except Exception as _rag_exc:
+                                    st.error(f"❌ RAG failed: {_rag_exc}")
 
             # ── Prepare Saved Documents ───────────────────────────────────────
             stem = Path(uploaded_file.name).stem
