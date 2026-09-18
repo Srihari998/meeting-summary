@@ -42,42 +42,59 @@ _RETRY_DELAYS = (1.5, 3.0, 5.0, 8.0)
 _MAX_CONTEXT_CHARS_PER_CHUNK = 800
 
 
+def get_all_api_keys() -> List[str]:
+    """
+    Returns an ordered list of all configured Gemini API keys for failover resilience.
+    """
+    keys: List[str] = []
+
+    # 1. Comma-separated list
+    raw_keys = os.environ.get("GEMINI_API_KEYS", "")
+    if raw_keys:
+        for k in raw_keys.split(","):
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+
+    # 2. Individual numbered keys
+    for var_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]:
+        k = (os.environ.get(var_name) or "").strip()
+        if k and k not in keys:
+            keys.append(k)
+
+    return keys
+
+
 class RAGError(Exception):
-    """Raised when the RAG pipeline fails."""
+    """Raised when RAG processing or LLM generation fails."""
     pass
 
 
 class RAGService:
     """
-    Retrieval-Augmented Generation service.
-
-    Retrieves relevant meeting context via SemanticSearchService,
-    then calls Gemini to produce a grounded, hallucination-free answer.
-
-    Args:
-        search_svc: SemanticSearchService instance (or auto-initialized).
-        api_key:    Gemini API key (reads GEMINI_API_KEY if not provided).
-        model:      Gemini generative model name.
+    RAG Question-Answering Service.
+    Retrieves semantically relevant meeting excerpts and generates grounded answers.
+    Supports automatic multi-key failover across all configured Gemini API keys.
     """
 
     def __init__(
         self,
-        search_svc: Optional[SemanticSearchService] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        search_svc: Optional[SemanticSearchService] = None,
     ) -> None:
-        self._search_svc = search_svc or SemanticSearchService()
         self._model = model or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+        self._search_svc = search_svc or SemanticSearchService()
+        self._api_keys = [api_key] if api_key else get_all_api_keys()
 
-        key = api_key or os.environ.get("GEMINI_API_KEY")
-        if not key:
+        if not self._api_keys:
             raise RAGError(
                 "GEMINI_API_KEY environment variable is not set. "
                 "Configure it before using RAGService."
             )
         try:
             from google import genai
-            self._client = genai.Client(api_key=key)
+            self._client = genai.Client(api_key=self._api_keys[0])
         except ImportError as exc:
             raise RAGError(
                 "google-genai package is required. Run: pip install google-genai"
@@ -108,8 +125,9 @@ class RAGService:
         return "\n\n---\n\n".join(lines)
 
     def _call_llm(self, prompt: str) -> str:
-        """Calls Gemini with retry logic, returns raw text response."""
+        """Calls Gemini with automatic multi-key failover and retry logic."""
         import time as _time
+        from google import genai
         from google.genai import types
 
         config = types.GenerateContentConfig(
@@ -117,34 +135,67 @@ class RAGService:
             temperature=0.1,  # Low temperature for factual grounded answers
         )
 
-        last_exc: Optional[Exception] = None
-        for attempt in range(1, _MAX_RETRIES + 1):
+        # If a client is already set / injected (e.g. In unit tests), use it directly
+        if hasattr(self, "_client") and self._client is not None:
+            last_exc: Optional[Exception] = None
+            for attempt in range(1, _MAX_RETRIES + 1):
+                try:
+                    response = self._client.models.generate_content(
+                        model=self._model,
+                        contents=prompt,
+                        config=config,
+                    )
+                    if not response.text:
+                        raise RAGError("Gemini returned an empty response.")
+                    return response.text
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < _MAX_RETRIES:
+                        delay = _RETRY_DELAYS[attempt - 1]
+                        logger.warning(
+                            f"[RAG Retry {attempt}/{_MAX_RETRIES}] Error: {exc}. Retrying in {delay:.1f}s..."
+                        )
+                        _time.sleep(delay)
+            raise RAGError(
+                f"RAG LLM call failed after {_MAX_RETRIES} attempts. Last error: {last_exc}"
+            ) from last_exc
+
+        api_keys = getattr(self, "_api_keys", None) or get_all_api_keys()
+        last_exc = None
+
+        for key_idx, key in enumerate(api_keys, start=1):
             try:
-                response = self._client.models.generate_content(
-                    model=self._model,
-                    contents=prompt,
-                    config=config,
-                )
-                if not response.text:
-                    raise RAGError("Gemini returned an empty response.")
-                return response.text
-            except Exception as exc:
-                last_exc = exc
-                if attempt < _MAX_RETRIES:
-                    delay = _RETRY_DELAYS[attempt - 1]
-                    logger.warning(
-                        "[RAGService] LLM attempt %d/%d failed: %s. Retrying in %.1fs...",
-                        attempt, _MAX_RETRIES, exc, delay,
-                    )
-                    _time.sleep(delay)
-                else:
-                    logger.error(
-                        "[RAGService] All %d LLM attempts failed. Last error: %s",
-                        _MAX_RETRIES, exc,
-                    )
+                active_client = genai.Client(api_key=key)
+                for attempt in range(1, _MAX_RETRIES + 1):
+                    try:
+                        response = active_client.models.generate_content(
+                            model=self._model,
+                            contents=prompt,
+                            config=config,
+                        )
+                        if not response.text:
+                            raise RAGError("Gemini returned an empty response.")
+                        return response.text
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < _MAX_RETRIES:
+                            delay = _RETRY_DELAYS[attempt - 1]
+                            logger.warning(
+                                f"[RAG Retry {attempt}/{_MAX_RETRIES} on Key {key_idx}/{len(api_keys)}] "
+                                f"Error: {exc}. Retrying in {delay:.1f}s..."
+                            )
+                            _time.sleep(delay)
+                        else:
+                            logger.warning(
+                                f"[RAG Key Failover] Key {key_idx}/{len(api_keys)} exhausted. "
+                                f"Failing over to next available API key..."
+                            )
+            except Exception as key_err:
+                last_exc = key_err
+                continue
 
         raise RAGError(
-            f"RAG LLM call failed after {_MAX_RETRIES} attempts. Last error: {last_exc}"
+            f"RAG LLM call failed across all {len(api_keys)} API keys. Last error: {last_exc}"
         ) from last_exc
 
     def answer(self, request: RAGRequest) -> RAGResponse:

@@ -57,34 +57,50 @@ class JSONFixError(LLMExtractionError):
     pass
 
 
+def get_all_api_keys() -> List[str]:
+    """
+    Returns an ordered list of all configured Gemini API keys for failover resilience.
+    Checks GEMINI_API_KEYS (comma-separated), and numbered keys (GEMINI_API_KEY, GEMINI_API_KEY_2, etc.).
+    """
+    keys: List[str] = []
+
+    # 1. Comma-separated list
+    raw_keys = os.environ.get("GEMINI_API_KEYS", "")
+    if raw_keys:
+        for k in raw_keys.split(","):
+            k = k.strip()
+            if k and k not in keys:
+                keys.append(k)
+
+    # 2. Individual numbered keys
+    for var_name in ["GEMINI_API_KEY", "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"]:
+        k = (os.environ.get(var_name) or "").strip()
+        if k and k not in keys:
+            keys.append(k)
+
+    return keys
+
+
 def get_genai_client(api_key: Optional[str] = None) -> genai.Client:
     """
     Initializes and returns a Google GenAI client instance.
-    Reads GEMINI_API_KEY from environment if not provided explicitly.
+    Reads first available key from get_all_api_keys() if not provided explicitly.
     """
-    key = api_key or os.environ.get("GEMINI_API_KEY")
-    if not key:
+    if api_key:
+        return genai.Client(api_key=api_key)
+    
+    keys = get_all_api_keys()
+    if not keys:
         raise LLMAPIError(
             "GEMINI_API_KEY environment variable is not set. "
             "Please configure GEMINI_API_KEY before using the LLM service."
         )
-    return genai.Client(api_key=key)
+    return genai.Client(api_key=keys[0])
 
 
 def load_prompt(template_name: str, **kwargs) -> str:
     """
     Loads a prompt template from the prompts/ directory and replaces {key} placeholders.
-
-    Args:
-        template_name: Filename of the template (e.g. 'meeting_intelligence_prompt.txt').
-        **kwargs: Variables to substitute into the template string.
-
-    Returns:
-        Formatted prompt string.
-
-    Raises:
-        FileNotFoundError: If the template file does not exist.
-        ValueError: If a required template placeholder is not provided in kwargs.
     """
     prompt_path = PROMPTS_DIR / template_name
     if not prompt_path.exists():
@@ -107,64 +123,44 @@ def load_prompt(template_name: str, **kwargs) -> str:
     return result
 
 
-def count_tokens(text: str) -> int:
+def count_tokens(text: str, client: Optional[genai.Client] = None, model: str = DEFAULT_MODEL) -> int:
     """
-    Estimates the number of tokens for a given text string.
-    Uses ~4 characters per token heuristic, adjusted for word density.
+    Counts tokens for the provided text. Uses ~1.3 tokens per word estimation.
     """
     if not text:
         return 0
-    char_count_tokens = len(text) / 4.0
-    word_count_tokens = len(text.split()) * 1.3
-    return int(max(char_count_tokens, word_count_tokens, 1))
+    return int(len(text.split()) * 1.3)
 
 
-def chunk_transcript(text: str, max_tokens: int = DEFAULT_CHUNK_MAX_TOKENS) -> List[str]:
+def chunk_transcript(
+    transcript: str,
+    max_tokens: int = DEFAULT_CHUNK_MAX_TOKENS,
+) -> List[str]:
     """
-    Splits long transcripts into chunks on natural boundaries (speaker turns,
-    paragraphs, or sentence boundaries) without cutting mid-sentence.
+    Splits a transcript into semantically coherent chunks respecting max_tokens.
+    Prefers splitting at double newlines, then single newlines, then sentence boundaries.
 
     Args:
-        text: The full transcript text.
-        max_tokens: Maximum allowed estimated tokens per chunk.
+        transcript: Full raw meeting transcript.
+        max_tokens: Maximum token budget per chunk.
 
     Returns:
-        List of text chunks, each within the max_tokens limit.
+        List of transcript text chunks.
     """
-    if count_tokens(text) <= max_tokens:
-        return [text.strip()]
+    if not transcript or not transcript.strip():
+        return []
 
-    # Split on natural boundaries: speaker turns (e.g. "Alice:", "[Speaker 1]") or paragraph breaks
-    paragraphs = re.split(r"(?:\r?\n){2,}|(?=\n[A-Za-z0-9 _-]+:)", text)
-    
-    units: List[str] = []
-    for para in paragraphs:
-        para_clean = para.strip()
-        if not para_clean:
-            continue
-        
-        # If a single paragraph is too large, break it down by sentences
-        if count_tokens(para_clean) > max_tokens:
-            sentences = re.split(r"(?<=[.!?])\s+", para_clean)
-            for sentence in sentences:
-                sent_clean = sentence.strip()
-                if not sent_clean:
-                    continue
-                # If a single sentence is absurdly long, break by words
-                if count_tokens(sent_clean) > max_tokens:
-                    words = sent_clean.split()
-                    current_word_chunk: List[str] = []
-                    for word in words:
-                        current_word_chunk.append(word)
-                        if count_tokens(" ".join(current_word_chunk)) >= max_tokens:
-                            units.append(" ".join(current_word_chunk))
-                            current_word_chunk = []
-                    if current_word_chunk:
-                        units.append(" ".join(current_word_chunk))
-                else:
-                    units.append(sent_clean)
-        else:
-            units.append(para_clean)
+    if count_tokens(transcript) <= max_tokens:
+        return [transcript.strip()]
+
+    # Split at natural conversation turn / paragraph boundaries first
+    if "\n\n" in transcript:
+        units = [u.strip() for u in transcript.split("\n\n") if u.strip()]
+    elif "\n" in transcript:
+        units = [u.strip() for u in transcript.split("\n") if u.strip()]
+    else:
+        # Sentence boundary split
+        units = [s.strip() for s in re.split(r"(?<=[.!?])\s+", transcript) if s.strip()]
 
     chunks: List[str] = []
     current_chunk_parts: List[str] = []
@@ -192,13 +188,14 @@ def call_gemini_with_retry(
     temperature: float = DEFAULT_TEMPERATURE,
 ) -> str:
     """
-    Executes a Gemini API call with exponential backoff retries on transient API/network errors.
+    Executes a Gemini API call with automatic multi-key failover and exponential backoff retries.
 
-    Retries up to API_MAX_RETRIES times with backoff delays (1s, 2s, 4s).
+    If an API key fails (due to quota, rate-limit, 503, etc.), it automatically switches
+    to the next configured API key in the failover pool.
 
     Args:
         prompt: The input prompt string.
-        client: Optional genai.Client instance (created if None).
+        client: Optional genai.Client instance.
         model: Model identifier.
         max_output_tokens: Explicit token budget for response.
         temperature: Sampling temperature.
@@ -207,9 +204,8 @@ def call_gemini_with_retry(
         Generated text response from the model.
 
     Raises:
-        LLMAPIError: If all retries are exhausted.
+        LLMAPIError: If all keys and retries are exhausted.
     """
-    active_client = client or get_genai_client()
     config = types.GenerateContentConfig(
         max_output_tokens=max_output_tokens,
         temperature=temperature,
@@ -217,33 +213,65 @@ def call_gemini_with_retry(
 
     last_exception: Optional[Exception] = None
 
-    for attempt in range(1, API_MAX_RETRIES + 1):
-        try:
-            response = active_client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=config,
-            )
-            if not response.text:
-                raise LLMAPIError("Gemini API returned an empty response body.")
-            return response.text
+    # If an explicit client was passed in, use it directly with retries
+    if client is not None:
+        for attempt in range(1, API_MAX_RETRIES + 1):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=config,
+                )
+                if not response.text:
+                    raise LLMAPIError("Gemini API returned an empty response body.")
+                return response.text
+            except Exception as exc:
+                last_exception = exc
+                if attempt < API_MAX_RETRIES:
+                    delay = API_RETRY_DELAYS[min(attempt - 1, len(API_RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+        raise LLMAPIError(
+            f"Gemini API request failed after {API_MAX_RETRIES} attempts. Last error: {last_exception}"
+        ) from last_exception
 
-        except Exception as exc:
-            last_exception = exc
-            if attempt < API_MAX_RETRIES:
-                delay = API_RETRY_DELAYS[attempt - 1] if (attempt - 1) < len(API_RETRY_DELAYS) else 4.0
-                logger.warning(
-                    f"[API Retry {attempt}/{API_MAX_RETRIES}] Gemini API call failed with error: {exc}. "
-                    f"Retrying in {delay}s..."
-                )
-                time.sleep(delay)
-            else:
-                logger.error(
-                    f"[API Exhausted] Gemini API call failed on final attempt {attempt}/{API_MAX_RETRIES}: {exc}"
-                )
+    api_keys = get_all_api_keys()
+
+    # Multi-Key Failover Loop
+    for key_idx, key in enumerate(api_keys, start=1):
+        try:
+            active_client = genai.Client(api_key=key)
+            for attempt in range(1, API_MAX_RETRIES + 1):
+                try:
+                    response = active_client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=config,
+                    )
+                    if not response.text:
+                        raise LLMAPIError("Gemini API returned an empty response body.")
+                    return response.text
+
+                except Exception as exc:
+                    last_exception = exc
+                    if attempt < API_MAX_RETRIES:
+                        delay = API_RETRY_DELAYS[min(attempt - 1, len(API_RETRY_DELAYS) - 1)]
+                        logger.warning(
+                            f"[API Retry {attempt}/{API_MAX_RETRIES} on Key {key_idx}/{len(api_keys)}] "
+                            f"Error: {exc}. Retrying in {delay}s..."
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.warning(
+                            f"[API Key Failover] Key {key_idx}/{len(api_keys)} ({key[:12]}...) exhausted. "
+                            f"Failing over to next available API key..."
+                        )
+        except Exception as key_err:
+            last_exception = key_err
+            continue
 
     raise LLMAPIError(
-        f"Gemini API request failed after {API_MAX_RETRIES} attempts. Last error: {last_exception}"
+        f"Gemini API request failed across all {len(api_keys)} configured API keys. "
+        f"Last error: {last_exception}"
     ) from last_exception
 
 
