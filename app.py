@@ -1,5 +1,5 @@
 """
-app.py — MEETIQ: Intelligent Meeting Intelligence & Speaker Diarization Platform
+app.py — IntelliMeet: Intelligent Meeting Intelligence & Speaker Diarization Platform
 Integrating Whisper ASR, PyTorch ResNet Diarization, Gemini LLM Intelligence,
 and ChromaDB Vector Knowledge Repository with RAG.
 """
@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 
 # ── Page Configuration ────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="MEETIQ — Turn conversations into intelligence",
+    page_title="IntelliMeet — Turn conversations into intelligence",
     page_icon="✦",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -214,13 +214,13 @@ st.markdown(
 
 # ── Sidebar Navigation & Controls ─────────────────────────────────────────────
 with st.sidebar:
-    # MEETIQ Branding Header
+    # IntelliMeet Branding Header
     st.markdown(
         """
         <div style="padding: 6px 0 10px 0;">
             <div class="brand-title">
                 <span class="brand-sparkle">✦</span>
-                <span>MEETIQ</span>
+                <span>IntelliMeet</span>
             </div>
             <div class="brand-tagline">
                 Turn conversations into intelligence.
@@ -240,7 +240,7 @@ with st.sidebar:
             "Intelligence",
             "Action Hub",
             "People",
-            "Ask MEETIQ",
+            "Ask IntelliMeet",
             "Validation",
         ],
         index=0,
@@ -310,7 +310,7 @@ with st.sidebar:
                     st.error(f"❌ Indexing error: {_iexc}")
 
     st.markdown("---")
-    st.caption("✦ **MEETIQ Platform** | Multi-Speaker Diarization, LLM Intelligence & RAG")
+    st.caption("✦ **IntelliMeet Platform** | Multi-Speaker Diarization, LLM Intelligence & RAG")
 
 
 # Helper function to render meeting intelligence results
@@ -363,7 +363,7 @@ def render_intelligence_dashboard(data: dict[str, Any], show_uploader_note: bool
         "📊 Stats & Speakers",
         "📝 Raw Transcript",
         "🔍 Semantic Search",
-        "💬 Ask MEETIQ",
+        "💬 Ask IntelliMeet",
     ]
     tabs = st.tabs(tab_titles)
 
@@ -1099,12 +1099,12 @@ elif nav_selection == "People":
     else:
         st.info("Process a meeting in **Command Center** to see participant role breakdowns and voice analytics.")
 
-# 6. ASK MEETIQ (RAG Q&A)
-elif nav_selection == "Ask MEETIQ":
-    st.markdown("## ✦ Ask MEETIQ")
+# 6. ASK INTELLIMEET (RAG Q&A)
+elif nav_selection == "Ask IntelliMeet":
+    st.markdown("## ✦ Ask IntelliMeet")
     st.markdown("Ask natural-language questions across your entire meeting knowledge repository. Responses are strictly grounded in stored recordings.")
     if not MILESTONE3_AVAILABLE:
-        st.warning("⚠️ Ask MEETIQ requires ChromaDB and Gemini configuration.")
+        st.warning("⚠️ Ask IntelliMeet requires ChromaDB and Gemini configuration.")
     else:
         render_rag_interface()
 
