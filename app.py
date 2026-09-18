@@ -1,20 +1,7 @@
 """
-app.py
-Meeting Transcription, Speaker Diarization & Executive Meeting Intelligence Tool
-Integrating Milestone 1 (OpenAI Whisper + Speaker Diarization) with
-Milestone 2 (LLM Summarization, Decision Tracking & Action Item Extraction).
-
-Pipeline:
-  Upload
-  → Validate
-  → Extract Audio (16kHz mono WAV via FFmpeg)
-  → VAD & Voice Activity Detection
-  → Speaker Embeddings & Voice Clustering (Anonymous: Speaker 1, 2, ...)
-  → OpenAI Whisper Transcription
-  → Speaker-Segment Alignment
-  → Transcript Validation
-  → Milestone 2 Meeting Intelligence (Gemini LLM Extraction: Summary, Key Points, Decisions, Participants, Action Items)
-  → Speaker Analytics & Multi-Format Export
+app.py — MEETIQ: Intelligent Meeting Intelligence & Speaker Diarization Platform
+Integrating Whisper ASR, PyTorch ResNet Diarization, Gemini LLM Intelligence,
+and ChromaDB Vector Knowledge Repository with RAG.
 """
 
 from __future__ import annotations
@@ -32,7 +19,7 @@ from typing import Any, Optional
 
 import streamlit as st
 
-# ── Ensure Milestone 2 Project Root is in sys.path ────────────────────────────
+# ── Ensure Project Roots in sys.path ──────────────────────────────────────────
 PROJECT_ROOT = Path(r"C:\Users\Dell\.gemini\antigravity\scam caller\project-ai")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -59,6 +46,7 @@ try:
     from milestone2.pipeline import process_meeting
     from milestone2.llm_service import LLMExtractionError, InvalidInputError
     from milestone2.schemas import MeetingIntelligence, ActionItem
+    from milestone2.participants import infer_speaker_roles
     MILESTONE2_AVAILABLE = True
 except Exception as _m2_err:
     MILESTONE2_AVAILABLE = False
@@ -66,6 +54,7 @@ except Exception as _m2_err:
     InvalidInputError = ValueError
     MeetingIntelligence = None
     ActionItem = None
+    infer_speaker_roles = None
 
 # Milestone 3 Imports
 try:
@@ -74,10 +63,12 @@ try:
     from milestone3.rag_service import RAGService
     from milestone3.schemas import SearchRequest, RAGRequest
     from milestone3.vector_store_service import VectorStoreService
+    from milestone3.meeting_repository import MeetingRepository
     MILESTONE3_AVAILABLE = True
 except Exception as _m3_err:
     MILESTONE3_AVAILABLE = False
     _m3_err_msg = str(_m3_err)
+    MeetingRepository = None
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -85,9 +76,10 @@ logger = logging.getLogger(__name__)
 
 # ── Page Configuration ────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Meeting Intelligence & Speaker Diarization",
-    page_icon="🎙️",
+    page_title="MEETIQ — Turn conversations into intelligence",
+    page_icon="✦",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # ── Transcripts Directory ─────────────────────────────────────────────────────
@@ -112,22 +104,55 @@ def get_diarizer(hf_token: str | None = None) -> SpeakerDiarizer:
 st.markdown(
     """
     <style>
+    /* Brand Header */
+    .brand-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 1.6rem;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        color: #0F172A;
+        margin-bottom: 2px;
+    }
+    .brand-sparkle {
+        color: #6366F1;
+        font-size: 1.8rem;
+        line-height: 1;
+    }
+    .brand-tagline {
+        color: #64748B;
+        font-size: 0.88rem;
+        font-weight: 400;
+        margin-bottom: 20px;
+    }
+    .nav-header {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #94A3B8;
+        letter-spacing: 1.2px;
+        margin-top: 18px;
+        margin-bottom: 8px;
+        text-transform: uppercase;
+    }
+
+    /* Uploader */
     [data-testid="stFileUploader"] {
-        border: 2px dashed #2563EB; border-radius: 12px;
+        border: 2px dashed #6366F1; border-radius: 12px;
         padding: 24px 16px; background: #F8FAFC;
         transition: border-color .2s ease, background .2s ease;
         text-align: center;
     }
-    [data-testid="stFileUploader"]:hover { border-color: #1D4ED8; background: #EFF6FF; }
+    [data-testid="stFileUploader"]:hover { border-color: #4F46E5; background: #EEF2FF; }
     [data-testid="stFileUploader"] label { font-size:1rem; font-weight:600; color:#1E293B; }
     [data-testid="stFileUploader"] button {
-        background-color:#2563EB !important; color:white !important;
+        background-color:#6366F1 !important; color:white !important;
         border-radius:8px !important; border:none !important;
         padding:8px 20px !important; font-weight:600 !important;
     }
     div.stButton > button[kind="primary"] {
         width:100%; padding:12px; font-size:1.05rem;
-        border-radius:10px; font-weight:700; background-color:#2563EB;
+        border-radius:10px; font-weight:700; background-color:#6366F1;
     }
     .overview-card {
         background:#F0FDF4; border-left:4px solid #16A34A;
@@ -135,7 +160,7 @@ st.markdown(
         margin-bottom:20px; color:#14532D; font-size:1.05rem; line-height:1.6;
     }
     .decision-card {
-        background:#EFF6FF; border-left:4px solid #2563EB;
+        background:#EFF6FF; border-left:4px solid #3B82F6;
         border-radius:0 10px 10px 0; padding:14px 18px;
         margin-bottom:12px; color:#1E3A8A; font-size:1rem;
     }
@@ -145,12 +170,12 @@ st.markdown(
     }
     .topic-header { font-weight:700; color:#1E293B; font-size:1rem; margin-bottom:8px; }
     .action-card {
-        background:#F8FAFC; border-left:4px solid #3B82F6;
+        background:#F8FAFC; border-left:4px solid #6366F1;
         border-radius:0 8px 8px 0; padding:12px 16px;
         margin-bottom:10px; color:#1E293B; font-size:.95rem;
     }
     .participant-pill {
-        display: inline-block; background: #E0E7FF; color: #3730A3;
+        display: inline-block; background: #EEF2FF; color: #4338CA;
         font-weight: 600; font-size: 0.88rem; padding: 4px 12px;
         border-radius: 9999px; margin-right: 8px; margin-bottom: 8px;
     }
@@ -170,120 +195,443 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar Navigation & Controls ─────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/microphone.png", width=64)
-    st.title("Settings & Engine")
+    # MEETIQ Branding Header
+    st.markdown(
+        """
+        <div style="padding: 6px 0 10px 0;">
+            <div class="brand-title">
+                <span class="brand-sparkle">✦</span>
+                <span>MEETIQ</span>
+            </div>
+            <div class="brand-tagline">
+                Turn conversations into intelligence.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    st.markdown("### 🤖 Model Selection")
-    model_name = st.selectbox(
-        "Whisper ASR Model",
-        options=["base", "tiny", "small", "medium", "large"],
+    # WORKSPACE Navigation Section
+    st.markdown('<div class="nav-header">WORKSPACE</div>', unsafe_allow_html=True)
+    nav_selection = st.radio(
+        "Workspace Navigation",
+        options=[
+            "Command Center",
+            "Meetings",
+            "Intelligence",
+            "Action Hub",
+            "People",
+            "Ask MEETIQ",
+            "Validation",
+        ],
         index=0,
-        help="base: balanced speed and accuracy. small/medium: higher accuracy.",
+        label_visibility="collapsed",
     )
 
-    st.markdown("### 👥 Speaker Diarization")
-    enable_diarization = st.checkbox(
-        "Enable Speaker Diarization",
-        value=True,
-        help="Detects distinct voices and assigns consistent anonymous speaker IDs (Speaker 1, Speaker 2...).",
-    )
-
-    expected_speakers_opt = "Auto"
-    hf_token = ""
-    if enable_diarization:
-        expected_speakers_opt = st.selectbox(
-            "Expected Speaker Count",
-            options=["Auto", "1", "2", "3", "4", "5", "6", "7", "8"],
+    # SYSTEM Section
+    st.markdown('<div class="nav-header">SYSTEM</div>', unsafe_allow_html=True)
+    
+    with st.expander("⚙️ Engine & Model Configuration", expanded=False):
+        model_name = st.selectbox(
+            "Whisper ASR Model",
+            options=["base", "tiny", "small", "medium", "large"],
             index=0,
-            help="Auto: discovers speaker count automatically. Or constrain to a known number.",
+            help="base: balanced speed and accuracy. small/medium: higher accuracy.",
         )
-        with st.expander("⚙️ Advanced Diarization (PyAnnote)"):
+
+        enable_diarization = st.checkbox(
+            "Enable Speaker Diarization",
+            value=True,
+            help="Detects distinct voices and assigns consistent anonymous speaker IDs (Speaker 1, Speaker 2...).",
+        )
+
+        expected_speakers_opt = "Auto"
+        hf_token = ""
+        if enable_diarization:
+            expected_speakers_opt = st.selectbox(
+                "Expected Speaker Count",
+                options=["Auto", "1", "2", "3", "4", "5", "6", "7", "8"],
+                index=0,
+            )
             hf_token = st.text_input(
                 "Hugging Face Token (Optional)",
                 type="password",
-                help="Optional: Enter HF token if you wish to use the pyannote.audio pipeline instead of the built-in local offline engine.",
+                help="Optional PyAnnote pipeline token.",
             )
 
-    st.markdown("### 🧠 AI Intelligence")
-    enable_milestone2 = st.checkbox(
-        "Enable AI Meeting Intelligence (LLM Extraction)",
-        value=MILESTONE2_AVAILABLE,
-        disabled=not MILESTONE2_AVAILABLE,
-        help="Uses Google Gemini to extract executive summary, key discussion points, decisions, participants with roles, and action items table.",
-    )
-    if not MILESTONE2_AVAILABLE:
-        st.caption("⚠️ AI LLM service package not detected. Using local heuristic summarizer.")
+        enable_milestone2 = st.checkbox(
+            "Enable AI Intelligence (LLM)",
+            value=MILESTONE2_AVAILABLE,
+            disabled=not MILESTONE2_AVAILABLE,
+            help="Uses Google Gemini for executive summary, key points, decisions, roles, and action items.",
+        )
 
-    st.markdown("### 💾 Export & Auto-save")
-    auto_save = st.checkbox("Auto-save outputs to `transcripts/`", value=True)
+        auto_save = st.checkbox("Auto-save outputs to `transcripts/`", value=True)
 
-    # ── Milestone 3: Knowledge Base ──────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("### 🔍 Meeting Knowledge Base")
+    # Knowledge Base Quick Status & Index Button
     if MILESTONE3_AVAILABLE:
         try:
-            _vstore_sidebar = VectorStoreService()
-            _total_vectors = _vstore_sidebar.count()
+            _vstore_sb = VectorStoreService()
+            _total_vecs = _vstore_sb.count()
         except Exception:
-            _total_vectors = 0
-        st.caption(f"📊 **{_total_vectors} indexed chunks** in knowledge base")
+            _total_vecs = 0
+        st.caption(f"📚 **{_total_vecs} knowledge chunks** indexed")
 
-        if st.button("📥 Index All Past Meetings", help="Embeds and indexes all meetings from the database into the semantic search engine."):
-            with st.spinner("Indexing all meetings into knowledge base…"):
+        if st.button("📥 Index All Past Meetings", help="Embeds all historical meetings into ChromaDB vector store."):
+            with st.spinner("Indexing meetings into knowledge base…"):
                 try:
-                    _idx_result = index_all_meetings()
-                    if _idx_result.chunks_indexed > 0:
-                        st.success(
-                            f"✅ Indexed {_idx_result.chunks_indexed} new chunks from "
-                            f"{len(_idx_result.meeting_ids_processed)} meeting(s).",
-                        )
-                    elif _idx_result.chunks_skipped > 0:
-                        st.info(f"ℹ️ All {_idx_result.chunks_skipped} chunks already up to date.")
-                    if _idx_result.errors:
-                        st.warning(f"⚠️ {len(_idx_result.errors)} meeting(s) had errors: {_idx_result.errors[0]}")
-                except Exception as _idx_exc:
-                    st.error(f"❌ Indexing failed: {_idx_exc}")
-    else:
-        st.caption("⚠️ Semantic search unavailable. Install chromadb to enable.")
+                    _idx_res = index_all_meetings()
+                    if _idx_res.chunks_indexed > 0:
+                        st.success(f"✅ Indexed {_idx_res.chunks_indexed} new chunks from {len(_idx_res.meeting_ids_processed)} meeting(s).")
+                    elif _idx_res.chunks_skipped > 0:
+                        st.info(f"ℹ️ All {_idx_res.chunks_skipped} chunks already up to date.")
+                    if _idx_res.errors:
+                        st.warning(f"⚠️ {_idx_res.errors[0]}")
+                except Exception as _iexc:
+                    st.error(f"❌ Indexing error: {_iexc}")
 
     st.markdown("---")
-    st.caption("🎙️ **Intelligent Meeting Transcription & Analytics**")
-    st.caption("✅ OpenAI Whisper ASR | ✅ Voice Clustering & Roles | ✅ Gemini AI Intelligence")
+    st.caption("✦ **MEETIQ Platform** | Multi-Speaker Diarization, LLM Intelligence & RAG")
 
-# ── Main Header ───────────────────────────────────────────────────────────────
-st.title("🎙️ Meeting Summarizer & Action Item Extraction")
-st.markdown(
-    "Upload meeting video or audio to generate **speaker-attributed transcripts**, "
-    "**executive summaries**, **key decisions**, and a structured **Action Items Table**."
-)
 
-all_supported = sorted(list(AUDIO_EXTENSIONS | VIDEO_EXTENSIONS))
-uploaded_file = st.file_uploader(
-    "Drop meeting recording here or click to browse",
-    type=all_supported,
-    help=f"Supported formats: {', '.join(all_supported).upper()}",
-)
+# Helper function to render meeting intelligence results
+def render_intelligence_dashboard(data: dict[str, Any], show_uploader_note: bool = False):
+    meeting_intel: Optional[MeetingIntelligence] = data.get("meeting_intel")
+    m1_summary: dict[str, Any] = data.get("m1_summary", {})
+    speaker_roles: dict[str, str] = data.get("speaker_roles", {})
+    aligned_turns: list[dict[str, Any]] = data.get("aligned_turns", [])
+    raw_text: str = data.get("raw_text", "")
+    segments: list = data.get("segments", [])
+    speaker_stats: dict[str, Any] = data.get("speaker_stats", {})
+    language: str = data.get("language", "en")
+    enable_diarization: bool = data.get("enable_diarization", True)
+    reference_text: str = data.get("reference_text", "")
 
-# Optional reference transcript for live accuracy testing
-with st.expander("🎯 Accuracy Evaluation / Ground-Truth Reference (Optional)"):
-    reference_text = st.text_area(
-        "Paste Ground-Truth Reference Transcript",
-        placeholder="Paste official reference transcript here to compute real-time WER, accuracy, substitutions, deletions, and insertions…",
-        height=100,
+    summary_text = meeting_intel.summary if meeting_intel else m1_summary.get("overview", "")
+    overview_html = html.escape(summary_text)
+    engine_badge = "Gemini AI Engine" if meeting_intel else "Fast Heuristic Engine"
+
+    st.markdown(
+        f"""<div class="overview-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <strong>🎯 Executive Summary:</strong>
+                <span style="font-size:0.8rem; background:#DCFCE7; color:#166534; padding:2px 8px; border-radius:6px; font-weight:600;">{engine_badge}</span>
+            </div>
+            {overview_html}
+        </div>""",
+        unsafe_allow_html=True,
     )
 
-start_button = st.button("🚀 Process Recording", type="primary", disabled=uploaded_file is None)
+    # Participants with Roles Pills
+    distinct_speakers = [t["speaker"] for t in aligned_turns] if aligned_turns else []
+    participants_list = meeting_intel.participants if (meeting_intel and meeting_intel.participants) else distinct_speakers
+    if participants_list:
+        pills_html_list = []
+        for p in participants_list:
+            p_role = speaker_roles.get(p, speaker_roles.get(p.strip(":"), "Team Member / Coworker"))
+            pills_html_list.append(
+                f"<span class='participant-pill'>👤 <strong>{html.escape(p)}</strong> <span style='opacity:0.85; font-size:0.82rem;'>({html.escape(p_role)})</span></span>"
+            )
+        st.markdown(f"**👥 Meeting Participants & Roles:** " + "".join(pills_html_list), unsafe_allow_html=True)
+        st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
 
-# ── Pipeline Execution ────────────────────────────────────────────────────────
-if start_button and uploaded_file is not None:
-    tmp_input: str | None = None
-    tmp_wav: str | None = None
+    # Tabs setup
+    tab_titles = [
+        "👥 Speaker Transcript" if enable_diarization and aligned_turns else "📝 Transcript",
+        "✅ Action Items",
+        "📑 Key Discussion Points",
+        "🤝 Agreed Decisions",
+        "📊 Stats & Speakers",
+        "📝 Raw Transcript",
+        "🔍 Semantic Search",
+        "💬 Ask MEETIQ",
+    ]
+    tabs = st.tabs(tab_titles)
 
-    with st.container():
+    # Tab 1: Speaker Transcript
+    with tabs[0]:
+        if enable_diarization and aligned_turns:
+            st.markdown(f"**🗣️ Conversation Flow with Inferred Roles ({len(aligned_turns)} turns):**")
+            for turn in aligned_turns:
+                spk = turn["speaker"]
+                spk_id = turn.get("speaker_id", 0)
+                spk_role = speaker_roles.get(spk, speaker_roles.get(f"Speaker {spk_id + 1}", "Team Member / Coworker"))
+                badge_class = f"speaker-badge-{(spk_id % 4) + 1}"
+                ts_str = turn.get("timestamp_str", f"[{turn['start']:.1f}s - {turn['end']:.1f}s]")
+                text_esc = html.escape(turn["text"])
+
+                st.markdown(
+                    f"""<div class="speaker-turn-card">
+                        <span class="{badge_class}">{html.escape(spk)}</span>
+                        <span style="background:#F1F5F9; color:#334155; font-weight:600; padding:2px 8px; border-radius:6px; font-size:0.82rem; margin-left:6px;">💼 {html.escape(spk_role)}</span>
+                        <small style="color:#64748B; margin-left:8px;">{html.escape(ts_str)}</small>
+                        <div style="margin-top:6px; color:#1E293B; font-size:.98rem;">{text_esc}</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.text_area("Transcript", value=raw_text, height=350, label_visibility="collapsed")
+
+    # Tab 2: Action Items Table (Responsive & Word-Wrapped)
+    with tabs[1]:
+        if meeting_intel and meeting_intel.action_items:
+            st.markdown(f"#### ✅ Extracted Action Items ({len(meeting_intel.action_items)} Tasks)")
+            table_html_rows = []
+            for idx, item in enumerate(meeting_intel.action_items, start=1):
+                a_role = speaker_roles.get(item.assignee, "")
+                role_tag = f"<br><small style='color:#64748B;'>({html.escape(a_role)})</small>" if a_role and a_role != "Team Member / Coworker" else ""
+                p_class = f"priority-{item.priority.lower()}"
+                table_html_rows.append(
+                    f"""<tr style="border-bottom: 1px solid #E2E8F0;">
+                        <td style="padding: 12px 14px; font-weight:600; color:#0F172A; line-height:1.5; word-break:break-word;">{idx}. {html.escape(item.task)}</td>
+                        <td style="padding: 12px 14px; color:#1E293B; word-break:break-word;">👤 {html.escape(item.assignee)}{role_tag}</td>
+                        <td style="padding: 12px 14px; color:#475569; word-break:break-word;">⏰ {html.escape(item.deadline or '—')}</td>
+                        <td style="padding: 12px 14px;"><span class="{p_class}">{html.escape(item.priority)}</span></td>
+                        <td style="padding: 12px 14px; color:#334155; font-size:0.88rem;">{html.escape(item.status)}</td>
+                    </tr>"""
+                )
+
+            st.markdown(
+                f"""<div style="overflow-x:auto; width:100%; margin-bottom:24px; border:1px solid #CBD5E1; border-radius:10px; background:#FFFFFF;">
+                    <table style="width:100%; border-collapse:collapse; font-size:0.95rem; text-align:left;">
+                        <thead>
+                            <tr style="background:#F8FAFC; border-bottom:2px solid #CBD5E1; color:#1E293B; font-weight:700;">
+                                <th style="padding:12px 14px; width:45%;">Task Description</th>
+                                <th style="padding:12px 14px; width:22%;">Assignee</th>
+                                <th style="padding:12px 14px; width:15%;">Deadline</th>
+                                <th style="padding:12px 14px; width:10%;">Priority</th>
+                                <th style="padding:12px 14px; width:8%;">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {"".join(table_html_rows)}
+                        </tbody>
+                    </table>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        elif m1_summary.get("action_items"):
+            st.markdown("#### ✅ Action Items (Heuristic)")
+            for item in m1_summary["action_items"]:
+                st.markdown(f"<div class='action-card'>☑️ {html.escape(item)}</div>", unsafe_allow_html=True)
+        else:
+            st.info("No explicit action items detected.")
+
+    # Tab 3: Key Discussion Points
+    with tabs[2]:
+        if meeting_intel and meeting_intel.key_points:
+            st.markdown("#### 📑 Key Discussion Points")
+            for pt in meeting_intel.key_points:
+                st.markdown(f"• {pt}")
+        elif m1_summary.get("topic_groups"):
+            for group in m1_summary["topic_groups"]:
+                topic_esc = html.escape(group["topic"])
+                points_html = "".join(f"<li style='margin-bottom:6px;'>{html.escape(p)}</li>" for p in group["points"])
+                st.markdown(
+                    f"""<div class="topic-card">
+                        <div class="topic-header">🔹 {topic_esc}</div>
+                        <ul style="margin:0;padding-left:20px;color:#334155;">{points_html}</ul>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("No key discussion points identified.")
+
+    # Tab 4: Agreed Decisions
+    with tabs[3]:
+        if meeting_intel and meeting_intel.decisions:
+            st.markdown("#### 🤝 Agreed Decisions & Consensus")
+            for dec in meeting_intel.decisions:
+                st.markdown(
+                    f"""<div class="decision-card">
+                        <strong>✔️ Decision:</strong> {html.escape(dec)}
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+        elif m1_summary.get("deadlines"):
+            st.markdown("#### ⏰ Key Deadlines & Milestones")
+            for dl in m1_summary["deadlines"]:
+                st.markdown(f"<div class='decision-card'>⏰ {html.escape(dl)}</div>", unsafe_allow_html=True)
+        else:
+            st.info("No formal decisions or agreements detected.")
+
+    # Tab 5: Stats & Speakers
+    with tabs[4]:
+        s = m1_summary.get("stats", {})
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Word Count", s.get("word_count", len(raw_text.split())))
+        c2.metric("Sentences", s.get("sentence_count", 0))
+        c3.metric("Speaking Time", s.get("speaking_time", "0:00"))
+        c4.metric("Language", language.upper())
+
+        if enable_diarization and speaker_stats.get("speakers"):
+            st.markdown("---")
+            st.markdown(f"#### 👥 Speaker Analytics & Roles ({speaker_stats['speaker_count']} Speakers Detected)")
+            spk_cols = st.columns(min(4, max(1, speaker_stats["speaker_count"])))
+            for idx, (spk_name, s_data) in enumerate(speaker_stats["speakers"].items()):
+                col_idx = idx % len(spk_cols)
+                r = speaker_roles.get(spk_name, "")
+                label_str = f"{spk_name} ({r})" if r else spk_name
+                with spk_cols[col_idx]:
+                    st.metric(
+                        label=label_str,
+                        value=f"{s_data['percentage']}%",
+                        delta=f"{s_data['speaking_time_formatted']} ({s_data['turn_count']} turns)",
+                        delta_color="off",
+                    )
+
+    # Tab 6: Raw Transcript & Timestamps
+    with tabs[5]:
+        st.text_area("Complete Raw Transcript", value=raw_text, height=250, label_visibility="collapsed")
+        if segments:
+            with st.expander("🕐 Timestamped Raw Segments"):
+                for seg in segments:
+                    st.markdown(
+                        f"**[{seg.get('start', 0):.1f}s → {seg.get('end', 0):.1f}s]** "
+                        f"{html.escape(seg.get('text', '').strip())}"
+                    )
+
+    # Tab 7: Semantic Search
+    with tabs[6]:
+        if not MILESTONE3_AVAILABLE:
+            st.warning("⚠️ Semantic search requires ChromaDB.")
+        else:
+            render_search_interface()
+
+    # Tab 8: Ask MEETIQ
+    with tabs[7]:
+        if not MILESTONE3_AVAILABLE:
+            st.warning("⚠️ RAG requires ChromaDB and Gemini.")
+        else:
+            render_rag_interface()
+
+
+def render_search_interface():
+    st.markdown("#### 🔍 Search Meeting Knowledge Base")
+    st.caption("Search across all indexed meetings using semantic understanding.")
+    _sc1, _sc2 = st.columns([4, 1])
+    with _sc1:
+        _q = st.text_input("Search query", placeholder="e.g. 'budget decisions' or 'API integration deadline'", label_visibility="collapsed", key="search_query_input")
+    with _sc2:
+        _top_k = st.number_input("Top K", min_value=1, max_value=20, value=5, key="search_top_k_input")
+
+    _filter = st.selectbox("Filter by content type", options=["All", "transcript", "summary", "decision", "action_item"], index=0, key="search_filter_input")
+
+    if st.button("🔍 Execute Search", key="btn_exec_search"):
+        if not _q.strip():
+            st.warning("Please enter a search query.")
+        else:
+            with st.spinner("Searching knowledge base…"):
+                try:
+                    svc = SemanticSearchService()
+                    results = svc.search(SearchRequest(query=_q, top_k=int(_top_k), source_type=None if _filter == "All" else _filter))
+                    if not results:
+                        st.info("No matching records found.")
+                    else:
+                        latency = results[0].search_latency_ms if results else 0
+                        status_color = "#16A34A" if latency < 3000 else "#DC2626"
+                        st.markdown(f"**{len(results)} result(s)** — <span style='color:{status_color}; font-weight:600;'>⏱ {latency:.0f} ms</span>", unsafe_allow_html=True)
+                        for rank_i, _sr in enumerate(results, 1):
+                            score_pct = int(_sr.relevance_score * 100)
+                            score_color = "#16A34A" if _sr.relevance_score > 0.7 else "#D97706" if _sr.relevance_score > 0.4 else "#6B7280"
+                            _badge_map = {
+                                "transcript": ("📄", "#DBEAFE", "#1E40AF"),
+                                "summary": ("📋", "#D1FAE5", "#065F46"),
+                                "decision": ("✔️", "#EDE9FE", "#4C1D95"),
+                                "action_item": ("☑️", "#FEF3C7", "#92400E"),
+                            }
+                            _icon, _bg, _fg = _badge_map.get(_sr.source_type, ("📄", "#F1F5F9", "#334155"))
+                            st.markdown(
+                                f"""<div style="border:1px solid #E2E8F0; border-radius:10px; padding:14px 18px; margin-bottom:12px; background:#FFFFFF;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                        <div>
+                                            <span style="font-weight:700; color:#1E293B;">#{rank_i}</span>
+                                            <span style="background:{_bg}; color:{_fg}; font-size:0.82rem; font-weight:600; padding:2px 8px; border-radius:6px; margin-left:8px;">{_icon} {html.escape(_sr.source_type)}</span>
+                                        </div>
+                                        <div>
+                                            <span style="color:{score_color}; font-weight:700; font-size:0.9rem;">{score_pct}% match</span>
+                                            <span style="color:#94A3B8; font-size:0.8rem; margin-left:10px;">Meeting: {html.escape(_sr.meeting_id[:16])}…</span>
+                                        </div>
+                                    </div>
+                                    <div style="color:#334155; font-size:0.95rem; line-height:1.55;">{html.escape(_sr.content[:600])}</div>
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
+                except Exception as ex:
+                    st.error(f"❌ Search error: {ex}")
+
+
+def render_rag_interface():
+    st.markdown("#### 💬 Ask MEETIQ (Grounded Intelligence)")
+    st.caption("Ask questions across all meetings. Answers are strictly grounded in your recorded meetings.")
+    _q = st.text_area("Your question", placeholder="e.g. 'Who is responsible for the API integration?' or 'What decisions were made regarding deadlines?'", height=90, label_visibility="collapsed", key="rag_q_input")
+    _top_k = st.slider("Context chunks to retrieve", min_value=1, max_value=10, value=5, key="rag_k_slider")
+
+    if st.button("💬 Get Answer", key="btn_get_rag"):
+        if not _q.strip():
+            st.warning("Please enter a question.")
+        else:
+            with st.spinner("Generating grounded answer…"):
+                try:
+                    rag_svc = RAGService()
+                    resp = rag_svc.answer(RAGRequest(question=_q, top_k=_top_k))
+                    st.markdown(
+                        f"""<div style="background:#F0FDF4; border-left:4px solid #16A34A; border-radius:0 10px 10px 0; padding:16px 20px; margin-bottom:20px;">
+                            <div style="font-weight:700; color:#14532D; margin-bottom:8px;">✦ MEETIQ Answer <span style="font-size:0.8rem; font-weight:400; color:#6B7280;">({resp.latency_ms:.0f} ms)</span></div>
+                            <div style="color:#1E293B; font-size:1rem; line-height:1.6;">{html.escape(resp.answer)}</div>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                    if resp.meeting_ids:
+                        pills = "".join(f"<span style='background:#EEF2FF; color:#4338CA; font-weight:600; font-size:0.82rem; padding:3px 10px; border-radius:9999px; margin-right:6px;'>📋 {html.escape(mid[:20])}</span>" for mid in resp.meeting_ids)
+                        st.markdown(f"**🔗 Source Meetings:** {pills}", unsafe_allow_html=True)
+                    if resp.sources:
+                        with st.expander(f"📎 View {len(resp.sources)} retrieved context chunk(s)"):
+                            for idx, src in enumerate(resp.sources, 1):
+                                st.markdown(
+                                    f"""<div style="border:1px solid #E2E8F0; border-radius:8px; padding:10px 14px; margin-bottom:8px; background:#F8FAFC;">
+                                        <div style="font-size:0.82rem; color:#64748B; margin-bottom:4px;">Chunk {idx} · {html.escape(src.source_type)} · Meeting: {html.escape(src.meeting_id[:16])} · {int(src.relevance_score * 100)}% match</div>
+                                        <div style="color:#334155; font-size:0.88rem;">{html.escape(src.content[:400])}</div>
+                                    </div>""",
+                                    unsafe_allow_html=True,
+                                )
+                except Exception as ex:
+                    st.error(f"❌ Answer generation error: {ex}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VIEW ROUTING BASED ON SIDEBAR NAVIGATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 1. COMMAND CENTER (Process Recording + Active Dashboard)
+if nav_selection == "Command Center":
+    st.markdown("## ✦ Command Center")
+    st.markdown("Upload meeting audio or video to run automated **transcription**, **speaker diarization**, **AI summarization**, and **action item extraction**.")
+
+    all_supported = sorted(list(AUDIO_EXTENSIONS | VIDEO_EXTENSIONS))
+    uploaded_file = st.file_uploader(
+        "Drop meeting recording here or click to browse",
+        type=all_supported,
+        help=f"Supported formats: {', '.join(all_supported).upper()}",
+    )
+
+    with st.expander("🎯 Accuracy Benchmark / Ground-Truth Reference (Optional)"):
+        reference_text = st.text_area(
+            "Paste Ground-Truth Reference Transcript",
+            placeholder="Paste reference text here to compute real-time WER, accuracy, substitutions, deletions, and insertions…",
+            height=80,
+        )
+
+    start_button = st.button("🚀 Process Recording", type="primary", disabled=uploaded_file is None)
+
+    if start_button and uploaded_file is not None:
+        tmp_input: str | None = None
+        tmp_wav: str | None = None
+
         try:
-            # ── Stage 1: File Validation ──────────────────────────────────────
+            # Stage 1: Validation
             with st.spinner("🔍 Validating file format and integrity…"):
                 validator = FileValidator()
                 is_valid, err_msg = validator.validate(uploaded_file)
@@ -291,29 +639,25 @@ if start_button and uploaded_file is not None:
                     st.error(f"❌ **Validation Failed:** {err_msg}")
                     st.stop()
 
-            st.success("✅ File validation passed")
-
-            # ── Stage 2: Save to Temp File ────────────────────────────────────
+            # Stage 2: Save to Temp
             suffix = Path(uploaded_file.name).suffix.lower()
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f_in:
                 f_in.write(uploaded_file.getvalue())
                 tmp_input = f_in.name
 
-            # ── Stage 3: Audio Extraction & 16kHz WAV Conversion ─────────────
+            # Stage 3: Audio Conversion
             with st.spinner("🔊 Converting audio to 16 kHz Mono WAV…"):
                 processor = AudioProcessor()
                 tmp_wav = processor.process(tmp_input)
 
-            # Get duration
             with wave.open(tmp_wav, "rb") as wf:
                 audio_duration_sec = wf.getnframes() / wf.getframerate()
 
-            st.success(f"✅ Audio converted: {audio_duration_sec:.1f}s ({audio_duration_sec/60:.1f} min)")
+            st.success(f"✅ Audio processed: {audio_duration_sec:.1f}s ({audio_duration_sec/60:.1f} min)")
 
-            # ── Stage 4: Speaker Diarization (Optional) ───────────────────────
-            speaker_turns: list[dict[str, Any]] = []
-            num_speakers_detected: int = 1
-
+            # Stage 4: Diarization
+            speaker_turns = []
+            num_speakers_detected = 1
             if enable_diarization:
                 with st.spinner("👥 Analyzing voices & clustering speaker embeddings…"):
                     try:
@@ -322,605 +666,97 @@ if start_button and uploaded_file is not None:
                         speaker_turns = diarizer.diarize(tmp_wav, num_speakers=n_spk)
                         detected_set = set(t["speaker"] for t in speaker_turns)
                         num_speakers_detected = max(1, len(detected_set))
-                        st.success(f"✅ Speaker diarization complete ({num_speakers_detected} speakers detected)")
+                        st.success(f"✅ Diarization complete ({num_speakers_detected} speakers detected)")
                     except Exception as exc:
-                        logger.warning("Diarization failed: %s, continuing with standard transcription", exc)
-                        st.warning(f"⚠️ Speaker diarization note: {exc}")
-                        speaker_turns = []
+                        logger.warning("Diarization note: %s", exc)
+                        st.warning(f"⚠️ Diarization note: {exc}")
 
-            # ── Stage 5: Full-Stream Whisper Transcription ────────────────────
+            # Stage 5: Whisper
             with st.spinner(f"🤖 Transcribing speech with Whisper ({model_name} model)…"):
                 transcriber = get_transcriber(model_name)
                 result = transcriber.transcribe(tmp_wav)
 
-            raw_text: str = result.get("text", "").strip()
-            segments: list = result.get("segments", [])
-            language: str = result.get("language", "unknown")
+            raw_text = result.get("text", "").strip()
+            segments = result.get("segments", [])
+            language = result.get("language", "unknown")
             st.success("✅ Whisper transcription completed")
 
-            # ── Stage 6: Transcript Validation ───────────────────────────────
-            with st.spinner("🔎 Validating transcript content…"):
-                is_meaningful = bool(raw_text) and len(raw_text.split()) >= 3
-
-            if not is_meaningful:
-                st.error(
-                    "❌ **Transcript Validation Failed:** No meaningful speech was detected. "
-                    "Please verify that the audio contains spoken words and try again."
-                )
+            if not raw_text or len(raw_text.split()) < 3:
+                st.error("❌ No meaningful speech detected in recording.")
                 st.stop()
 
-            st.success(f"✅ Transcript validated ({len(raw_text.split())} words, language: {language.upper()})")
-
-            # ── Stage 7: Speaker-Segment Alignment ────────────────────────────
-            aligned_turns: list[dict[str, Any]] = []
-            speaker_stats: dict[str, Any] = {}
-            speaker_transcript_doc: str = ""
-
+            # Stage 6: Speaker Alignment
+            aligned_turns = []
+            speaker_stats = {}
+            speaker_transcript_doc = ""
             if enable_diarization and speaker_turns:
                 with st.spinner("🔗 Aligning Whisper segments with speaker turns…"):
                     aligned_turns = align_whisper_with_speakers(segments, speaker_turns)
                     speaker_stats = compute_speaker_statistics(aligned_turns, audio_duration_sec)
                     speaker_transcript_doc = format_speaker_transcript(aligned_turns)
-                st.success("✅ Speaker alignment completed")
 
-            # ── Stage 8: AI Meeting Intelligence & Action Items Extraction ────
-            meeting_intel: Optional[MeetingIntelligence] = None
-            m1_summary: dict[str, Any] = {}
-
+            # Stage 7: LLM Intelligence
+            meeting_intel = None
             if enable_milestone2 and MILESTONE2_AVAILABLE:
-                with st.spinner("✨ Extracting Meeting Intelligence & Action Items via AI…"):
+                with st.spinner("✨ Extracting Meeting Intelligence & Action Items via Gemini…"):
                     try:
                         meeting_intel = process_meeting(raw_text)
-                        st.success("✅ Meeting Intelligence & Action Items extracted successfully")
-                    except InvalidInputError as exc:
-                        logger.warning("Input Notice: %s", exc)
-                        st.warning(f"⚠️ Input Notice: {exc}")
-                    except LLMExtractionError as exc:
-                        logger.warning("LLM Extraction Notice: %s", exc)
-                        st.warning(f"⚠️ LLM Extraction Notice: {exc}")
+                        st.success("✅ Intelligence & Action Items extracted successfully")
                     except Exception as exc:
-                        logger.error("AI intelligence extraction error: %s", exc, exc_info=True)
-                        st.warning(f"⚠️ AI intelligence extraction encountered an issue: {exc}")
+                        logger.warning("LLM extraction note: %s", exc)
+                        st.warning(f"⚠️ LLM extraction note: {exc}")
 
-            # Fast Heuristic fallback if needed
             summarizer = MeetingSummarizer()
             m1_summary = summarizer.summarize(raw_text)
 
-            # ── Stage 9: Speaker Role & Designation Inference ─────────────────
+            # Stage 8: Role Inference
             distinct_speakers = [t["speaker"] for t in aligned_turns] if aligned_turns else []
             if meeting_intel and meeting_intel.participants:
                 for p in meeting_intel.participants:
                     if p not in distinct_speakers:
                         distinct_speakers.append(p)
 
-            speaker_roles: dict[str, str] = {}
-            if distinct_speakers or raw_text:
+            speaker_roles = {}
+            if (distinct_speakers or raw_text) and infer_speaker_roles:
                 with st.spinner("💼 Inferring participant roles & designations…"):
                     try:
-                        from milestone2.participants import infer_speaker_roles
                         speaker_roles = infer_speaker_roles(raw_text, distinct_speakers)
                     except Exception as r_err:
                         logger.warning("Role inference note: %s", r_err)
 
-            # ── Display Results ───────────────────────────────────────────────
-            st.markdown("---")
-            st.subheader("📋 Meeting Intelligence Dashboard")
+            # Store in session state
+            st.session_state["active_meeting_data"] = {
+                "meeting_intel": meeting_intel,
+                "m1_summary": m1_summary,
+                "speaker_roles": speaker_roles,
+                "aligned_turns": aligned_turns,
+                "raw_text": raw_text,
+                "segments": segments,
+                "speaker_stats": speaker_stats,
+                "language": language,
+                "enable_diarization": enable_diarization,
+                "reference_text": reference_text,
+            }
 
-            # Overview Card
-            summary_text = meeting_intel.summary if meeting_intel else m1_summary["overview"]
-            overview_html = html.escape(summary_text)
-            engine_badge = "Gemini AI Engine" if meeting_intel else "Fast Heuristic Engine"
-            
-            st.markdown(
-                f"""<div class="overview-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                        <strong>🎯 Executive Summary:</strong>
-                        <span style="font-size:0.8rem; background:#DCFCE7; color:#166534; padding:2px 8px; border-radius:6px; font-weight:600;">{engine_badge}</span>
-                    </div>
-                    {overview_html}
-                </div>""",
-                unsafe_allow_html=True,
-            )
-
-            # Participants with Roles Pills
-            participants_list = meeting_intel.participants if (meeting_intel and meeting_intel.participants) else distinct_speakers
-            if participants_list:
-                pills_html_list = []
-                for p in participants_list:
-                    p_role = speaker_roles.get(p, speaker_roles.get(p.strip(":"), "Team Member / Coworker"))
-                    pills_html_list.append(
-                        f"<span class='participant-pill'>👤 <strong>{html.escape(p)}</strong> <span style='opacity:0.85; font-size:0.82rem;'>({html.escape(p_role)})</span></span>"
-                    )
-                st.markdown(f"**👥 Meeting Participants & Roles:** " + "".join(pills_html_list), unsafe_allow_html=True)
-                st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
-
-            # Tab setup
-            tab_titles = [
-                "👥 Speaker Transcript" if enable_diarization and aligned_turns else "📝 Transcript",
-                "✅ Action Items",
-                "📑 Key Discussion Points",
-                "🤝 Agreed Decisions",
-                "📊 Stats & Speakers",
-                "📝 Raw Transcript",
-                "🔍 Semantic Search",
-                "💬 Ask a Question",
-            ]
-            tabs = st.tabs(tab_titles)
-
-            # Tab 1: Speaker Transcript
-            with tabs[0]:
-                if enable_diarization and aligned_turns:
-                    st.markdown(f"**🗣️ Conversation Flow with Inferred Roles ({len(aligned_turns)} turns):**")
-                    for turn in aligned_turns:
-                        spk = turn["speaker"]
-                        spk_id = turn.get("speaker_id", 0)
-                        spk_role = speaker_roles.get(spk, speaker_roles.get(f"Speaker {spk_id + 1}", "Team Member / Coworker"))
-                        badge_class = f"speaker-badge-{(spk_id % 4) + 1}"
-                        ts_str = turn.get("timestamp_str", f"[{turn['start']:.1f}s - {turn['end']:.1f}s]")
-                        text_esc = html.escape(turn["text"])
-
-                        st.markdown(
-                            f"""<div class="speaker-turn-card">
-                                <span class="{badge_class}">{html.escape(spk)}</span>
-                                <span style="background:#F1F5F9; color:#334155; font-weight:600; padding:2px 8px; border-radius:6px; font-size:0.82rem; margin-left:6px;">💼 {html.escape(spk_role)}</span>
-                                <small style="color:#64748B; margin-left:8px;">{html.escape(ts_str)}</small>
-                                <div style="margin-top:6px; color:#1E293B; font-size:.98rem;">{text_esc}</div>
-                            </div>""",
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.text_area("Transcript", value=raw_text, height=350, label_visibility="collapsed")
-
-            # Tab 2: Action Items Table (Responsive & Word-Wrapped)
-            with tabs[1]:
-                if meeting_intel and meeting_intel.action_items:
-                    st.markdown(f"#### ✅ Extracted Action Items ({len(meeting_intel.action_items)} Tasks)")
-                    
-                    # Full-width responsive table with automatic word wrapping (no sentence clipping)
-                    table_html_rows = []
-                    for idx, item in enumerate(meeting_intel.action_items, start=1):
-                        a_role = speaker_roles.get(item.assignee, "")
-                        role_tag = f"<br><small style='color:#64748B;'>({html.escape(a_role)})</small>" if a_role and a_role != "Team Member / Coworker" else ""
-                        p_class = f"priority-{item.priority.lower()}"
-                        
-                        table_html_rows.append(
-                            f"""<tr style="border-bottom: 1px solid #E2E8F0;">
-                                <td style="padding: 12px 14px; font-weight:600; color:#0F172A; line-height:1.5; word-break:break-word;">{idx}. {html.escape(item.task)}</td>
-                                <td style="padding: 12px 14px; color:#1E293B; word-break:break-word;">👤 {html.escape(item.assignee)}{role_tag}</td>
-                                <td style="padding: 12px 14px; color:#475569; word-break:break-word;">⏰ {html.escape(item.deadline or '—')}</td>
-                                <td style="padding: 12px 14px;"><span class="{p_class}">{html.escape(item.priority)}</span></td>
-                                <td style="padding: 12px 14px; color:#334155; font-size:0.88rem;">{html.escape(item.status)}</td>
-                            </tr>"""
-                        )
-
-                    st.markdown(
-                        f"""<div style="overflow-x:auto; width:100%; margin-bottom:24px; border:1px solid #CBD5E1; border-radius:10px; background:#FFFFFF;">
-                            <table style="width:100%; border-collapse:collapse; font-size:0.95rem; text-align:left;">
-                                <thead>
-                                    <tr style="background:#F8FAFC; border-bottom:2px solid #CBD5E1; color:#1E293B; font-weight:700;">
-                                        <th style="padding:12px 14px; width:45%;">Task Description</th>
-                                        <th style="padding:12px 14px; width:22%;">Assignee</th>
-                                        <th style="padding:12px 14px; width:15%;">Deadline</th>
-                                        <th style="padding:12px 14px; width:10%;">Priority</th>
-                                        <th style="padding:12px 14px; width:8%;">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {"".join(table_html_rows)}
-                                </tbody>
-                            </table>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-
-                    # Detailed Task Cards below
-                    st.markdown("##### 📌 Detailed Task Cards")
-                    for item in meeting_intel.action_items:
-                        p_class = f"priority-{item.priority.lower()}"
-                        a_role = speaker_roles.get(item.assignee, "")
-                        role_tag = f" <small style='color:#64748B;'>({html.escape(a_role)})</small>" if a_role else ""
-                        st.markdown(
-                            f"""<div class="action-card">
-                                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                                    <strong style="font-size:1rem; line-height:1.4;">☑️ {html.escape(item.task)}</strong>
-                                    <span class="{p_class}" style="margin-left:12px; white-space:nowrap;">{html.escape(item.priority)}</span>
-                                </div>
-                                <div style="margin-top:8px; font-size:0.88rem; color:#475569;">
-                                    👤 <strong>Assignee:</strong> {html.escape(item.assignee)}{role_tag} &nbsp;|&nbsp; 
-                                    ⏰ <strong>Deadline:</strong> {html.escape(item.deadline or 'Not specified')} &nbsp;|&nbsp; 
-                                    🔄 <strong>Status:</strong> {html.escape(item.status)}
-                                </div>
-                            </div>""",
-                            unsafe_allow_html=True,
-                        )
-                elif m1_summary.get("action_items"):
-                    st.markdown("#### ✅ Action Items (Heuristic)")
-                    for item in m1_summary["action_items"]:
-                        st.markdown(f"<div class='action-card'>☑️ {html.escape(item)}</div>", unsafe_allow_html=True)
-                else:
-                    st.info("No explicit action items detected in this recording.")
-
-            # Tab 3: Key Discussion Points
-            with tabs[2]:
-                if meeting_intel and meeting_intel.key_points:
-                    st.markdown("#### 📑 Key Discussion Points")
-                    for pt in meeting_intel.key_points:
-                        st.markdown(f"• {pt}")
-                elif m1_summary.get("topic_groups"):
-                    for group in m1_summary["topic_groups"]:
-                        topic_esc = html.escape(group["topic"])
-                        points_html = "".join(f"<li style='margin-bottom:6px;'>{html.escape(p)}</li>" for p in group["points"])
-                        st.markdown(
-                            f"""<div class="topic-card">
-                                <div class="topic-header">🔹 {topic_esc}</div>
-                                <ul style="margin:0;padding-left:20px;color:#334155;">{points_html}</ul>
-                            </div>""",
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.info("No key discussion points identified.")
-
-            # Tab 4: Agreed Decisions
-            with tabs[3]:
-                if meeting_intel and meeting_intel.decisions:
-                    st.markdown("#### 🤝 Agreed Decisions & Consensus")
-                    for dec in meeting_intel.decisions:
-                        st.markdown(
-                            f"""<div class="decision-card">
-                                <strong>✔️ Decision:</strong> {html.escape(dec)}
-                            </div>""",
-                            unsafe_allow_html=True,
-                        )
-                elif m1_summary.get("deadlines"):
-                    st.markdown("#### ⏰ Key Deadlines & Milestones")
-                    for dl in m1_summary["deadlines"]:
-                        st.markdown(f"<div class='decision-card'>⏰ {html.escape(dl)}</div>", unsafe_allow_html=True)
-                else:
-                    st.info("No formal decisions or agreements detected.")
-
-            # Tab 5: Stats & Speakers
-            with tabs[4]:
-                s = m1_summary["stats"]
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Word Count", s["word_count"])
-                c2.metric("Sentences", s["sentence_count"])
-                c3.metric("Speaking Time", s["speaking_time"])
-                c4.metric("Language", language.upper())
-
-                if enable_diarization and speaker_stats.get("speakers"):
-                    st.markdown("---")
-                    st.markdown(f"#### 👥 Speaker Analytics & Roles ({speaker_stats['speaker_count']} Speakers Detected)")
-                    spk_cols = st.columns(min(4, max(1, speaker_stats["speaker_count"])))
-                    for idx, (spk_name, s_data) in enumerate(speaker_stats["speakers"].items()):
-                        col_idx = idx % len(spk_cols)
-                        r = speaker_roles.get(spk_name, "")
-                        label_str = f"{spk_name} ({r})" if r else spk_name
-                        with spk_cols[col_idx]:
-                            st.metric(
-                                label=label_str,
-                                value=f"{s_data['percentage']}%",
-                                delta=f"{s_data['speaking_time_formatted']} ({s_data['turn_count']} turns)",
-                                delta_color="off",
-                            )
-
-                if reference_text.strip():
-                    st.markdown("---")
-                    st.markdown("#### 🎯 Accuracy Evaluation (WER Benchmark)")
-                    metrics = calculate_wer_and_metrics(reference_text.strip(), raw_text)
-
-                    mc1, mc2, mc3 = st.columns(3)
-                    mc1.metric("Reference Words", metrics["ref_words"])
-                    mc2.metric("Generated Words", metrics["hyp_words"])
-                    mc3.metric("WER", f"{metrics['wer'] * 100:.2f}%")
-
-                    mc4, mc5, mc6 = st.columns(3)
-                    mc4.metric("Substitutions", metrics["substitutions"])
-                    mc5.metric("Deletions", metrics["deletions"])
-                    mc6.metric("Insertions", metrics["insertions"])
-
-                    acc = metrics["accuracy_pct"]
-                    if metrics["passed"]:
-                        st.success(f"**Accuracy:** {acc:.2f}%  |  **Required:** ≥90%  |  **Status:** ✅ PASS")
-                    else:
-                        st.error(f"**Accuracy:** {acc:.2f}%  |  **Required:** ≥90%  |  **Status:** ❌ FAIL")
-
-            # Tab 6: Raw Transcript & Timestamps
-            with tabs[5]:
-                st.text_area("Complete Raw Transcript", value=raw_text, height=250, label_visibility="collapsed")
-                if segments:
-                    with st.expander("🕐 Timestamped Raw Segments"):
-                        for seg in segments:
-                            st.markdown(
-                                f"**[{seg.get('start', 0):.1f}s → {seg.get('end', 0):.1f}s]** "
-                                f"{html.escape(seg.get('text', '').strip())}"
-                            )
-
-            # ── Auto-index current meeting into vector store ───────────────────
+            # Auto-index into vector store
             if MILESTONE3_AVAILABLE and meeting_intel:
                 try:
-                    from milestone3.meeting_repository import MeetingRepository
-                    _repo = MeetingRepository()
-                    _all_ids = _repo.list_meeting_ids()
-                    if _all_ids:
-                        # The most recently saved meeting is the one just processed
-                        # (list_meeting_ids returns in insertion order from DB)
-                        # Use the last inserted meeting by querying newest
-                        _latest_meetings = _repo.get_all_meetings()
-                        if _latest_meetings:
-                            _current_mid = _latest_meetings[0].id  # ordered desc by created_at
-                            _idx = index_meeting(_current_mid)
-                            if _idx.chunks_indexed > 0:
-                                st.toast(f"🔍 Indexed {_idx.chunks_indexed} chunks into knowledge base", icon="✅")
-                            elif _idx.chunks_skipped > 0:
-                                st.toast("🔍 Meeting already in knowledge base", icon="ℹ️")
-                except Exception as _auto_idx_err:
-                    logger.warning("Auto-indexing failed: %s", _auto_idx_err)
+                    repo = MeetingRepository()
+                    latest = repo.get_all_meetings()
+                    if latest:
+                        idx_res = index_meeting(latest[0].id)
+                        if idx_res.chunks_indexed > 0:
+                            st.toast(f"🔍 Indexed {idx_res.chunks_indexed} chunks into knowledge base", icon="✅")
+                except Exception as a_err:
+                    logger.warning("Auto-indexing notice: %s", a_err)
 
-            # Tab 7: Semantic Search
-            with tabs[6]:
-                if not MILESTONE3_AVAILABLE:
-                    st.warning("⚠️ Semantic search requires the `chromadb` package. Run `pip install chromadb`.")
-                else:
-                    st.markdown("#### 🔍 Search Meeting Knowledge Base")
-                    st.caption(
-                        "Search all indexed meetings using natural language. "
-                        "Results are ranked by semantic relevance. Index meetings first using the sidebar button."
-                    )
-
-                    _search_col1, _search_col2 = st.columns([4, 1])
-                    with _search_col1:
-                        _search_query = st.text_input(
-                            "Search query",
-                            placeholder="e.g. 'budget decisions for Q4' or 'API integration deadline'",
-                            label_visibility="collapsed",
-                        )
-                    with _search_col2:
-                        _search_top_k = st.number_input("Top K", min_value=1, max_value=20, value=5)
-
-                    _src_filter = st.selectbox(
-                        "Filter by content type (optional)",
-                        options=["All", "transcript", "summary", "decision", "action_item"],
-                        index=0,
-                    )
-
-                    if st.button("🔍 Search", key="btn_search"):
-                        if not _search_query.strip():
-                            st.warning("Please enter a search query.")
-                        else:
-                            with st.spinner("Searching meeting knowledge base…"):
-                                try:
-                                    _s_svc = SemanticSearchService()
-                                    _s_req = SearchRequest(
-                                        query=_search_query,
-                                        top_k=int(_search_top_k),
-                                        source_type=None if _src_filter == "All" else _src_filter,
-                                    )
-                                    _s_results = _s_svc.search(_s_req)
-
-                                    if not _s_results:
-                                        st.info("No results found. Make sure meetings are indexed via the sidebar button.")
-                                    else:
-                                        latency = _s_results[0].search_latency_ms if _s_results else 0
-                                        status_color = "#16A34A" if latency < 3000 else "#DC2626"
-                                        st.markdown(
-                                            f"**{len(_s_results)} result(s)** — "
-                                            f"<span style='color:{status_color}; font-weight:600;'>⏱ {latency:.0f} ms</span>",
-                                            unsafe_allow_html=True,
-                                        )
-                                        for rank_i, _sr in enumerate(_s_results, 1):
-                                            score_pct = int(_sr.relevance_score * 100)
-                                            score_color = "#16A34A" if _sr.relevance_score > 0.7 else "#D97706" if _sr.relevance_score > 0.4 else "#6B7280"
-                                            _badge_map = {
-                                                "transcript": ("📄", "#DBEAFE", "#1E40AF"),
-                                                "summary": ("📋", "#D1FAE5", "#065F46"),
-                                                "decision": ("✔️", "#EDE9FE", "#4C1D95"),
-                                                "action_item": ("☑️", "#FEF3C7", "#92400E"),
-                                            }
-                                            _icon, _bg, _fg = _badge_map.get(_sr.source_type, ("📄", "#F1F5F9", "#334155"))
-                                            st.markdown(
-                                                f"""<div style="border:1px solid #E2E8F0; border-radius:10px; padding:14px 18px; margin-bottom:12px; background:#FFFFFF;">
-                                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                                                        <div>
-                                                            <span style="font-weight:700; color:#1E293B;">#{rank_i}</span>
-                                                            <span style="background:{_bg}; color:{_fg}; font-size:0.82rem; font-weight:600; padding:2px 8px; border-radius:6px; margin-left:8px;">{_icon} {html.escape(_sr.source_type)}</span>
-                                                        </div>
-                                                        <div>
-                                                            <span style="color:{score_color}; font-weight:700; font-size:0.9rem;">{score_pct}% match</span>
-                                                            <span style="color:#94A3B8; font-size:0.8rem; margin-left:10px;">Meeting: {html.escape(_sr.meeting_id[:16])}…</span>
-                                                        </div>
-                                                    </div>
-                                                    <div style="color:#334155; font-size:0.95rem; line-height:1.55;">{html.escape(_sr.content[:600])}</div>
-                                                </div>""",
-                                                unsafe_allow_html=True,
-                                            )
-                                except Exception as _srch_exc:
-                                    st.error(f"❌ Search failed: {_srch_exc}")
-
-            # Tab 8: RAG — Ask a Question
-            with tabs[7]:
-                if not MILESTONE3_AVAILABLE:
-                    st.warning("⚠️ RAG requires the `chromadb` package. Run `pip install chromadb`.")
-                else:
-                    st.markdown("#### 💬 Ask a Question About Your Meetings")
-                    st.caption(
-                        "Ask any natural-language question. The AI retrieves relevant meeting content and "
-                        "answers based only on your stored meetings — no fabrication."
-                    )
-
-                    _rag_question = st.text_area(
-                        "Your question",
-                        placeholder="e.g. 'Who is responsible for the backend API?' or 'What decisions were made about the product launch?'",
-                        height=90,
-                        label_visibility="collapsed",
-                    )
-                    _rag_top_k = st.slider("Context chunks to retrieve", min_value=1, max_value=10, value=5)
-
-                    if st.button("💬 Get Answer", key="btn_rag"):
-                        if not _rag_question.strip():
-                            st.warning("Please enter a question.")
-                        else:
-                            with st.spinner("Retrieving context and generating grounded answer…"):
-                                try:
-                                    _rag_svc = RAGService()
-                                    _rag_resp = _rag_svc.answer(RAGRequest(question=_rag_question, top_k=_rag_top_k))
-
-                                    # Answer card
-                                    st.markdown(
-                                        f"""<div style="background:#F0FDF4; border-left:4px solid #16A34A; border-radius:0 10px 10px 0; padding:16px 20px; margin-bottom:20px;">
-                                            <div style="font-weight:700; color:#14532D; margin-bottom:8px;">🤖 Answer <span style="font-size:0.8rem; font-weight:400; color:#6B7280;">({_rag_resp.latency_ms:.0f} ms)</span></div>
-                                            <div style="color:#1E293B; font-size:1rem; line-height:1.6;">{html.escape(_rag_resp.answer)}</div>
-                                        </div>""",
-                                        unsafe_allow_html=True,
-                                    )
-
-                                    # Source meeting IDs
-                                    if _rag_resp.meeting_ids:
-                                        _mid_pills = "".join(
-                                            f"<span style='background:#E0E7FF; color:#3730A3; font-weight:600; font-size:0.82rem; padding:3px 10px; border-radius:9999px; margin-right:6px;'>📋 {html.escape(mid[:20])}</span>"
-                                            for mid in _rag_resp.meeting_ids
-                                        )
-                                        st.markdown(
-                                            f"**🔗 Sources from meetings:** {_mid_pills}",
-                                            unsafe_allow_html=True,
-                                        )
-
-                                    # Retrieved context chunks (collapsible)
-                                    if _rag_resp.sources:
-                                        with st.expander(f"📎 View {len(_rag_resp.sources)} retrieved context chunk(s)"):
-                                            for _ci, _cs in enumerate(_rag_resp.sources, 1):
-                                                st.markdown(
-                                                    f"""<div style="border:1px solid #E2E8F0; border-radius:8px; padding:12px 16px; margin-bottom:10px; background:#F8FAFC;">
-                                                        <div style="font-size:0.82rem; color:#64748B; margin-bottom:6px;">
-                                                            Chunk {_ci} · {html.escape(_cs.source_type)} · Meeting: {html.escape(_cs.meeting_id[:20])} · {int(_cs.relevance_score * 100)}% match
-                                                        </div>
-                                                        <div style="color:#334155; font-size:0.9rem;">{html.escape(_cs.content[:500])}</div>
-                                                    </div>""",
-                                                    unsafe_allow_html=True,
-                                                )
-                                except Exception as _rag_exc:
-                                    st.error(f"❌ RAG failed: {_rag_exc}")
-
-            # ── Prepare Saved Documents ───────────────────────────────────────
-            stem = Path(uploaded_file.name).stem
-            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-            # Format role-annotated speaker transcript document
-            if enable_diarization and aligned_turns:
-                spk_annotated_lines = []
-                for turn in aligned_turns:
-                    spk = turn["speaker"]
-                    spk_id = turn.get("speaker_id", 0)
-                    spk_role = speaker_roles.get(spk, speaker_roles.get(f"Speaker {spk_id + 1}", "Team Member / Coworker"))
-                    ts_str = turn.get("timestamp_str", f"[{turn['start']:.1f}s - {turn['end']:.1f}s]")
-                    spk_annotated_lines.append(f"{spk} [{spk_role}] {ts_str}:\n  {turn['text']}\n")
-                speaker_transcript_doc = "\n".join(spk_annotated_lines)
-
-            summary_lines = [
-                "=" * 60,
-                "          EXECUTIVE MEETING INTELLIGENCE REPORT",
-                "=" * 60,
-                f"File : {uploaded_file.name}",
-                f"Date : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"ASR Model : Whisper {model_name}",
-                f"Intelligence Engine : {'Gemini AI' if meeting_intel else 'Fast Heuristic'}",
-                f"Diarization : {'Enabled (' + str(num_speakers_detected) + ' speakers)' if enable_diarization else 'Disabled'}",
-                "",
-                "EXECUTIVE SUMMARY:",
-                f"  {summary_text}",
-            ]
-
-            if participants_list:
-                part_lines = []
-                for p in participants_list:
-                    r = speaker_roles.get(p, "")
-                    part_lines.append(f"{p} ({r})" if r else p)
-                summary_lines.extend(["", "PARTICIPANTS & ROLES:", "  " + ", ".join(part_lines)])
-
-            if meeting_intel and meeting_intel.key_points:
-                summary_lines.extend(["", "KEY DISCUSSION POINTS:"])
-                for pt in meeting_intel.key_points:
-                    summary_lines.append(f"  • {pt}")
-
-            if meeting_intel and meeting_intel.decisions:
-                summary_lines.extend(["", "AGREED DECISIONS:"])
-                for dec in meeting_intel.decisions:
-                    summary_lines.append(f"  ✔️ {dec}")
-
-            if meeting_intel and meeting_intel.action_items:
-                summary_lines.extend(["", "ACTION ITEMS & DELIVERABLES:"])
-                for item in meeting_intel.action_items:
-                    dl = f" (Deadline: {item.deadline})" if item.deadline else ""
-                    summary_lines.append(f"  ☑ [{item.priority}] {item.task} — Assignee: {item.assignee}{dl} [Status: {item.status}]")
-
-            summary_doc = "\n".join(summary_lines)
-
-            # ── Auto-save ─────────────────────────────────────────────────────
+            # Auto-save
             if auto_save:
-                transcript_path = TRANSCRIPT_DIR / f"{stem}_{ts}_transcript.txt"
-                summary_path = TRANSCRIPT_DIR / f"{stem}_{ts}_summary.txt"
-                transcript_path.write_text(raw_text, encoding="utf-8")
-                summary_path.write_text(summary_doc, encoding="utf-8")
-
-                saved_notes = [f"`transcripts/{transcript_path.name}`", f"`transcripts/{summary_path.name}`"]
-
-                if enable_diarization and speaker_transcript_doc:
-                    spk_txt_path = TRANSCRIPT_DIR / f"{stem}_{ts}_speaker_transcript.txt"
-                    spk_meta_path = TRANSCRIPT_DIR / f"{stem}_{ts}_speaker_metadata.json"
-                    spk_txt_path.write_text(speaker_transcript_doc, encoding="utf-8")
-                    spk_meta_path.write_text(
-                        json.dumps({
-                            "filename": uploaded_file.name,
-                            "timestamp": ts,
-                            "model": model_name,
-                            "speaker_count": speaker_stats.get("speaker_count", 1),
-                            "speakers": speaker_stats.get("speakers", {}),
-                            "total_speech_time_sec": speaker_stats.get("total_speech_time_sec", 0.0),
-                            "participants": participants_list,
-                            "action_items_count": len(meeting_intel.action_items) if meeting_intel else 0,
-                        }, indent=2),
-                        encoding="utf-8",
-                    )
-                    saved_notes.append(f"`transcripts/{spk_txt_path.name}`")
-
-                st.info("💾 Auto-saved → " + ", ".join(saved_notes))
-
-            # ── Downloads ─────────────────────────────────────────────────────
-            st.markdown("---")
-            dl_cols = st.columns(3 if enable_diarization and speaker_transcript_doc else 2)
-            with dl_cols[0]:
-                st.download_button(
-                    label="⬇️ Raw Transcript (.txt)",
-                    data=raw_text,
-                    file_name=f"{stem}_raw_transcript.txt",
-                    mime="text/plain",
-                )
-            with dl_cols[1]:
-                st.download_button(
-                    label="⬇️ Executive Summary (.txt)",
-                    data=summary_doc,
-                    file_name=f"{stem}_executive_summary.txt",
-                    mime="text/plain",
-                )
-            if enable_diarization and speaker_transcript_doc:
-                with dl_cols[2]:
-                    st.download_button(
-                        label="⬇️ Speaker-Attributed Transcript (.txt)",
-                        data=speaker_transcript_doc,
-                        file_name=f"{stem}_speaker_transcript.txt",
-                        mime="text/plain",
-                    )
-
-        except RuntimeError as exc:
-            logger.error("Pipeline RuntimeError: %s", exc, exc_info=True)
-            st.error(f"❌ **Processing Error:** {exc}")
-
-        except FileNotFoundError as exc:
-            logger.error("File not found: %s", exc, exc_info=True)
-            st.error(f"❌ **File Error:** {exc}")
-
-        except Exception as exc:
-            logger.exception("Unexpected error: %s", exc)
-            st.error(f"❌ An unexpected error occurred: {exc}")
+                stem = Path(uploaded_file.name).stem
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                txt_p = TRANSCRIPT_DIR / f"{stem}_{ts}_transcript.txt"
+                txt_p.write_text(raw_text, encoding="utf-8")
+                st.info(f"💾 Transcript saved to `transcripts/{txt_p.name}`")
 
         finally:
             for p in [tmp_input, tmp_wav]:
@@ -929,3 +765,264 @@ if start_button and uploaded_file is not None:
                         os.remove(p)
                     except OSError:
                         pass
+
+    # Render dashboard if active meeting data exists
+    if "active_meeting_data" in st.session_state:
+        st.markdown("---")
+        st.subheader("📋 Meeting Intelligence Dashboard")
+        render_intelligence_dashboard(st.session_state["active_meeting_data"])
+
+# 2. MEETINGS (Browse & Search Repository)
+elif nav_selection == "Meetings":
+    st.markdown("## 📁 Meeting Knowledge Repository")
+    st.markdown("Browse, inspect, and search across all historical meetings stored in the database.")
+
+    if not MILESTONE3_AVAILABLE or not MeetingRepository:
+        st.warning("⚠️ Meeting repository requires Milestone 3 modules.")
+    else:
+        repo = MeetingRepository()
+        all_meetings = repo.get_all_meetings()
+
+        if not all_meetings:
+            st.info("No meetings currently saved in the repository. Process a recording in Command Center first!")
+        else:
+            col_sel, col_stat = st.columns([3, 1])
+            with col_stat:
+                st.metric("Total Meetings", len(all_meetings))
+
+            with col_sel:
+                meeting_options = {
+                    f"{m.created_at.strftime('%Y-%m-%d %H:%M')} — {m.summary[:60]}… (ID: {m.id[:8]}…)": m.id
+                    for m in all_meetings
+                }
+                selected_label = st.selectbox("Select a meeting to view details:", list(meeting_options.keys()))
+                selected_mid = meeting_options[selected_label]
+
+            selected_meeting = repo.get_meeting_by_id(selected_mid)
+            if selected_meeting:
+                st.markdown("---")
+                st.markdown(f"### 📋 Meeting Details (`{selected_meeting.id}`)")
+                st.caption(f"Recorded on: {selected_meeting.created_at.strftime('%Y-%m-%d %H:%M UTC')}")
+
+                # Summary Card
+                st.markdown(
+                    f"""<div class="overview-card">
+                        <strong>🎯 Executive Summary:</strong><br>
+                        {html.escape(selected_meeting.summary)}
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+                m_tabs = st.tabs(["✅ Action Items", "📑 Decisions & Key Points", "📝 Transcript", "👥 Participants"])
+                with m_tabs[0]:
+                    if selected_meeting.action_items:
+                        for ai in selected_meeting.action_items:
+                            p_class = f"priority-{ai.priority.lower()}"
+                            st.markdown(
+                                f"""<div class="action-card">
+                                    <strong>☑️ {html.escape(ai.task)}</strong> — <span class="{p_class}">{ai.priority}</span><br>
+                                    <small>👤 Assignee: {html.escape(ai.assignee)} | ⏰ Deadline: {html.escape(ai.deadline or '—')} | 🔄 Status: {html.escape(ai.status)}</small>
+                                </div>""",
+                                unsafe_allow_html=True,
+                            )
+                    else:
+                        st.info("No action items recorded.")
+
+                with m_tabs[1]:
+                    if selected_meeting.decisions:
+                        st.markdown("**Agreed Decisions:**")
+                        for d in selected_meeting.decisions:
+                            st.markdown(f"<div class='decision-card'>✔️ {html.escape(d)}</div>", unsafe_allow_html=True)
+                    if selected_meeting.key_points:
+                        st.markdown("**Key Discussion Points:**")
+                        for kp in selected_meeting.key_points:
+                            st.markdown(f"• {kp}")
+
+                with m_tabs[2]:
+                    st.text_area("Transcript", value=selected_meeting.transcript, height=300)
+
+                with m_tabs[3]:
+                    if selected_meeting.participants:
+                        p_pills = "".join(f"<span class='participant-pill'>👤 {html.escape(p.name)}</span>" for p in selected_meeting.participants)
+                        st.markdown(p_pills, unsafe_allow_html=True)
+                    else:
+                        st.info("No participants recorded.")
+
+        st.markdown("---")
+        render_search_interface()
+
+# 3. INTELLIGENCE (Executive Summary & Consensus)
+elif nav_selection == "Intelligence":
+    st.markdown("## 💡 Executive Meeting Intelligence")
+    st.markdown("High-level executive overview, key discussion points, and agreed consensus.")
+
+    if "active_meeting_data" in st.session_state:
+        data = st.session_state["active_meeting_data"]
+        meeting_intel: Optional[MeetingIntelligence] = data.get("meeting_intel")
+        m1_summary = data.get("m1_summary", {})
+        summary_text = meeting_intel.summary if meeting_intel else m1_summary.get("overview", "No summary available.")
+
+        st.markdown(
+            f"""<div class="overview-card">
+                <strong>🎯 Active Executive Summary:</strong><br>
+                {html.escape(summary_text)}
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### 📑 Key Discussion Points")
+            if meeting_intel and meeting_intel.key_points:
+                for pt in meeting_intel.key_points:
+                    st.markdown(f"• {pt}")
+            else:
+                st.info("No key points available.")
+
+        with col2:
+            st.markdown("#### 🤝 Agreed Decisions & Consensus")
+            if meeting_intel and meeting_intel.decisions:
+                for d in meeting_intel.decisions:
+                    st.markdown(f"<div class='decision-card'>✔️ {html.escape(d)}</div>", unsafe_allow_html=True)
+            else:
+                st.info("No decisions recorded.")
+    else:
+        st.info("Process a recording in **Command Center** to see live intelligence, or browse saved records in **Meetings**.")
+
+# 4. ACTION HUB (Tasks & Deliverables)
+elif nav_selection == "Action Hub":
+    st.markdown("## ✅ Action Hub & Deliverables Tracker")
+    st.markdown("Consolidated action items, assignees, deadlines, and execution status.")
+
+    if "active_meeting_data" in st.session_state:
+        data = st.session_state["active_meeting_data"]
+        meeting_intel: Optional[MeetingIntelligence] = data.get("meeting_intel")
+        speaker_roles = data.get("speaker_roles", {})
+
+        if meeting_intel and meeting_intel.action_items:
+            st.markdown(f"### 📋 Action Items Table ({len(meeting_intel.action_items)} Tasks)")
+            table_html_rows = []
+            for idx, item in enumerate(meeting_intel.action_items, start=1):
+                a_role = speaker_roles.get(item.assignee, "")
+                role_tag = f"<br><small style='color:#64748B;'>({html.escape(a_role)})</small>" if a_role and a_role != "Team Member / Coworker" else ""
+                p_class = f"priority-{item.priority.lower()}"
+                table_html_rows.append(
+                    f"""<tr style="border-bottom: 1px solid #E2E8F0;">
+                        <td style="padding: 12px 14px; font-weight:600; color:#0F172A; line-height:1.5; word-break:break-word;">{idx}. {html.escape(item.task)}</td>
+                        <td style="padding: 12px 14px; color:#1E293B; word-break:break-word;">👤 {html.escape(item.assignee)}{role_tag}</td>
+                        <td style="padding: 12px 14px; color:#475569; word-break:break-word;">⏰ {html.escape(item.deadline or '—')}</td>
+                        <td style="padding: 12px 14px;"><span class="{p_class}">{html.escape(item.priority)}</span></td>
+                        <td style="padding: 12px 14px; color:#334155; font-size:0.88rem;">{html.escape(item.status)}</td>
+                    </tr>"""
+                )
+
+            st.markdown(
+                f"""<div style="overflow-x:auto; width:100%; margin-bottom:24px; border:1px solid #CBD5E1; border-radius:10px; background:#FFFFFF;">
+                    <table style="width:100%; border-collapse:collapse; font-size:0.95rem; text-align:left;">
+                        <thead>
+                            <tr style="background:#F8FAFC; border-bottom:2px solid #CBD5E1; color:#1E293B; font-weight:700;">
+                                <th style="padding:12px 14px; width:45%;">Task Description</th>
+                                <th style="padding:12px 14px; width:22%;">Assignee</th>
+                                <th style="padding:12px 14px; width:15%;">Deadline</th>
+                                <th style="padding:12px 14px; width:10%;">Priority</th>
+                                <th style="padding:12px 14px; width:8%;">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {"".join(table_html_rows)}
+                        </tbody>
+                    </table>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("No action items extracted for the current recording.")
+    else:
+        st.info("No active meeting loaded. Process a recording in **Command Center** or view past tasks in **Meetings**.")
+
+# 5. PEOPLE (Participants & Roles)
+elif nav_selection == "People":
+    st.markdown("## 👥 Participants & Inferred Roles")
+    st.markdown("Participant directory, inferred professional designations, and speaker voice metrics.")
+
+    if "active_meeting_data" in st.session_state:
+        data = st.session_state["active_meeting_data"]
+        meeting_intel = data.get("meeting_intel")
+        speaker_roles = data.get("speaker_roles", {})
+        speaker_stats = data.get("speaker_stats", {})
+        aligned_turns = data.get("aligned_turns", [])
+
+        distinct_speakers = [t["speaker"] for t in aligned_turns] if aligned_turns else []
+        participants_list = meeting_intel.participants if (meeting_intel and meeting_intel.participants) else distinct_speakers
+
+        if participants_list:
+            st.markdown("#### 💼 Identified Team Members")
+            cols = st.columns(min(3, max(1, len(participants_list))))
+            for idx, p in enumerate(participants_list):
+                col_i = idx % len(cols)
+                role = speaker_roles.get(p, speaker_roles.get(p.strip(":"), "Team Member / Coworker"))
+                with cols[col_i]:
+                    st.markdown(
+                        f"""<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:10px; padding:16px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+                            <div style="font-weight:700; font-size:1.05rem; color:#1E293B;">👤 {html.escape(p)}</div>
+                            <div style="color:#6366F1; font-weight:600; font-size:0.9rem; margin-top:4px;">💼 {html.escape(role)}</div>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+        if speaker_stats.get("speakers"):
+            st.markdown("---")
+            st.markdown("#### 📊 Voice Time & Speaking Distribution")
+            for spk_name, s_data in speaker_stats["speakers"].items():
+                st.write(f"**{spk_name}**: {s_data['percentage']}% ({s_data['speaking_time_formatted']} across {s_data['turn_count']} turns)")
+                st.progress(s_data["percentage"] / 100.0)
+    else:
+        st.info("Process a meeting in **Command Center** to see participant role breakdowns and voice analytics.")
+
+# 6. ASK MEETIQ (RAG Q&A)
+elif nav_selection == "Ask MEETIQ":
+    st.markdown("## ✦ Ask MEETIQ")
+    st.markdown("Ask natural-language questions across your entire meeting knowledge repository. Responses are strictly grounded in stored recordings.")
+    if not MILESTONE3_AVAILABLE:
+        st.warning("⚠️ Ask MEETIQ requires ChromaDB and Gemini configuration.")
+    else:
+        render_rag_interface()
+
+# 7. VALIDATION (Quality & Benchmarking)
+elif nav_selection == "Validation":
+    st.markdown("## 🧪 Quality & Ground-Truth Benchmarking")
+    st.markdown("Word Error Rate (WER) accuracy benchmark, file format verification, and system diagnostic status.")
+
+    if "active_meeting_data" in st.session_state:
+        data = st.session_state["active_meeting_data"]
+        raw_text = data.get("raw_text", "")
+        ref_text = data.get("reference_text", "")
+
+        if ref_text.strip():
+            metrics = calculate_wer_and_metrics(ref_text.strip(), raw_text)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Reference Words", metrics["ref_words"])
+            c2.metric("Generated Words", metrics["hyp_words"])
+            c3.metric("WER", f"{metrics['wer'] * 100:.2f}%")
+
+            c4, c5, c6 = st.columns(3)
+            c4.metric("Substitutions", metrics["substitutions"])
+            c5.metric("Deletions", metrics["deletions"])
+            c6.metric("Insertions", metrics["insertions"])
+
+            acc = metrics["accuracy_pct"]
+            if metrics["passed"]:
+                st.success(f"**Accuracy:** {acc:.2f}%  |  **Required:** ≥90%  |  **Status:** ✅ PASS")
+            else:
+                st.error(f"**Accuracy:** {acc:.2f}%  |  **Required:** ≥90%  |  **Status:** ❌ FAIL")
+        else:
+            st.info("To test accuracy, paste a ground-truth reference text in the **Command Center** before processing.")
+    else:
+        st.info("No active recording data. Process a recording in **Command Center** with a reference transcript to view real-time accuracy benchmarks.")
+
+    st.markdown("---")
+    st.markdown("#### 🩺 System Diagnostics")
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Whisper Engine", "Operational ✅")
+    d2.metric("Gemini Intelligence", "Operational ✅" if MILESTONE2_AVAILABLE else "Disabled ⚠️")
+    d3.metric("ChromaDB Vector Store", "Operational ✅" if MILESTONE3_AVAILABLE else "Disabled ⚠️")
