@@ -154,6 +154,23 @@ st.markdown(
         width:100%; padding:12px; font-size:1.05rem;
         border-radius:10px; font-weight:700; background-color:#6366F1;
     }
+    /* Suggested Questions Buttons */
+    div[data-testid="column"] button[kind="secondary"] {
+        background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 10px 14px !important;
+        font-size: 0.86rem !important;
+        font-weight: 500 !important;
+        box-shadow: 0 2px 5px rgba(99, 102, 241, 0.25) !important;
+        transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+    }
+    div[data-testid="column"] button[kind="secondary"]:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 10px rgba(99, 102, 241, 0.4) !important;
+        color: #FFFFFF !important;
+    }
     .overview-card {
         background:#F0FDF4; border-left:4px solid #16A34A;
         border-radius:0 10px 10px 0; padding:16px 20px;
@@ -564,41 +581,144 @@ def render_search_interface():
 
 
 def render_rag_interface():
-    st.markdown("#### 💬 Ask MEETIQ (Grounded Intelligence)")
-    st.caption("Ask questions across all meetings. Answers are strictly grounded in your recorded meetings.")
-    _q = st.text_area("Your question", placeholder="e.g. 'Who is responsible for the API integration?' or 'What decisions were made regarding deadlines?'", height=90, label_visibility="collapsed", key="rag_q_input")
-    _top_k = st.slider("Context chunks to retrieve", min_value=1, max_value=10, value=5, key="rag_k_slider")
+    # 1. Suggested Questions Section Header
+    st.markdown("##### 💡 **Suggested Questions (Click to test):**")
+    
+    suggested_questions = [
+        "What did we decide about the mobile application?",
+        "What tasks were assigned to Priya?",
+        "What was the status of API integration?",
+        "Which meetings discussed the project launch?",
+        "What deadlines were discussed?",
+        "Who was responsible for UI testing?",
+    ]
+    
+    if "rag_query_text" not in st.session_state:
+        st.session_state["rag_query_text"] = "what are the tasks for Q4 Mobile Application Launch Roadmap"
+    
+    # Render 2 rows of 3 columns with purple gradient buttons
+    for row_idx in range(0, len(suggested_questions), 3):
+        cols = st.columns(3)
+        for col_idx, q_text in enumerate(suggested_questions[row_idx:row_idx+3]):
+            with cols[col_idx]:
+                if st.button(f"💭 {q_text}", key=f"sugg_q_{row_idx + col_idx}", use_container_width=True):
+                    st.session_state["rag_query_text"] = q_text
+                    st.session_state["trigger_rag_search"] = True
+                    st.rerun()
 
-    if st.button("💬 Get Answer", key="btn_get_rag"):
-        if not _q.strip():
-            st.warning("Please enter a question.")
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    st.markdown("**Your Question:**")
+    
+    user_query = st.text_input(
+        "Your Question",
+        value=st.session_state.get("rag_query_text", ""),
+        placeholder="e.g. what are the tasks for Q4 Mobile Application Launch Roadmap",
+        label_visibility="collapsed",
+        key="rag_input_field",
+    )
+    
+    # Keep session state in sync
+    if user_query != st.session_state.get("rag_query_text", ""):
+        st.session_state["rag_query_text"] = user_query
+    
+    # Action Row
+    col_btn1, col_btn2, col_note = st.columns([1.5, 1.2, 5])
+    with col_btn1:
+        search_clicked = st.button("🔮 Search with AI", key="btn_search_ai", type="primary", use_container_width=True)
+    with col_btn2:
+        clear_clicked = st.button("🧹 Clear", key="btn_clear_ai", use_container_width=True)
+    with col_note:
+        st.markdown("<div style='color: #64748B; font-size: 0.86rem; padding-top: 8px;'>Answers are validated and synthesized strictly against your SQLite meeting repository.</div>", unsafe_allow_html=True)
+        
+    if clear_clicked:
+        st.session_state["rag_query_text"] = ""
+        st.session_state["last_rag_resp"] = None
+        st.session_state["trigger_rag_search"] = False
+        st.rerun()
+        
+    should_search = search_clicked or st.session_state.get("trigger_rag_search", False)
+    
+    if should_search:
+        st.session_state["trigger_rag_search"] = False
+        active_q = st.session_state.get("rag_query_text", "").strip()
+        if not active_q:
+            st.warning("Please enter a question or click a suggested question above.")
         else:
-            with st.spinner("Generating grounded answer…"):
+            with st.spinner("Retrieving meeting context & synthesizing grounded answer…"):
                 try:
                     rag_svc = RAGService()
-                    resp = rag_svc.answer(RAGRequest(question=_q, top_k=_top_k))
-                    st.markdown(
-                        f"""<div style="background:#F0FDF4; border-left:4px solid #16A34A; border-radius:0 10px 10px 0; padding:16px 20px; margin-bottom:20px;">
-                            <div style="font-weight:700; color:#14532D; margin-bottom:8px;">✦ MEETIQ Answer <span style="font-size:0.8rem; font-weight:400; color:#6B7280;">({resp.latency_ms:.0f} ms)</span></div>
-                            <div style="color:#1E293B; font-size:1rem; line-height:1.6;">{html.escape(resp.answer)}</div>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-                    if resp.meeting_ids:
-                        pills = "".join(f"<span style='background:#EEF2FF; color:#4338CA; font-weight:600; font-size:0.82rem; padding:3px 10px; border-radius:9999px; margin-right:6px;'>📋 {html.escape(mid[:20])}</span>" for mid in resp.meeting_ids)
-                        st.markdown(f"**🔗 Source Meetings:** {pills}", unsafe_allow_html=True)
-                    if resp.sources:
-                        with st.expander(f"📎 View {len(resp.sources)} retrieved context chunk(s)"):
-                            for idx, src in enumerate(resp.sources, 1):
-                                st.markdown(
-                                    f"""<div style="border:1px solid #E2E8F0; border-radius:8px; padding:10px 14px; margin-bottom:8px; background:#F8FAFC;">
-                                        <div style="font-size:0.82rem; color:#64748B; margin-bottom:4px;">Chunk {idx} · {html.escape(src.source_type)} · Meeting: {html.escape(src.meeting_id[:16])} · {int(src.relevance_score * 100)}% match</div>
-                                        <div style="color:#334155; font-size:0.88rem;">{html.escape(src.content[:400])}</div>
-                                    </div>""",
-                                    unsafe_allow_html=True,
-                                )
+                    resp = rag_svc.answer(RAGRequest(question=active_q, top_k=5))
+                    st.session_state["last_rag_resp"] = resp
                 except Exception as ex:
                     st.error(f"❌ Answer generation error: {ex}")
+                    st.session_state["last_rag_resp"] = None
+
+    # Render Answer Card & Sources
+    last_resp = st.session_state.get("last_rag_resp")
+    if last_resp:
+        latency_sec = last_resp.latency_ms / 1000.0
+        
+        # Emerald Green Answer Card matching screenshot
+        st.markdown(
+            f"""<div style="background: #F0FDF4; border: 2px solid #10B981; border-radius: 12px; padding: 18px 22px; margin-top: 20px; margin-bottom: 24px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <div style="font-weight: 700; color: #065F46; font-size: 1.08rem; display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 1.2rem;">💡</span>
+                        <span>AI Synthesized Answer</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="background: #DCFCE7; color: #166534; font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 6px; border: 1px solid #BBF7D0;">
+                            ✅ Grounded in Repository
+                        </span>
+                        <span style="background: #EFF6FF; color: #1E40AF; font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 6px; border: 1px solid #DBEAFE;">
+                            ⚡ {latency_sec:.2f}s
+                        </span>
+                    </div>
+                </div>
+                <div style="color: #1E293B; font-size: 0.98rem; line-height: 1.65;">
+                    {html.escape(last_resp.answer)}
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        
+        # Source Meeting Records Section
+        if last_resp.sources:
+            st.markdown(
+                """<div style="font-weight: 700; font-size: 1.15rem; color: #1E293B; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 1.2rem;">📁</span>
+                    <span>Source Meeting Records</span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            
+            _badge_map = {
+                "transcript": ("📄", "#DBEAFE", "#1E40AF"),
+                "summary": ("📋", "#D1FAE5", "#065F46"),
+                "decision": ("✔️", "#EDE9FE", "#4C1D95"),
+                "action_item": ("☑️", "#FEF3C7", "#92400E"),
+            }
+            
+            for idx, src in enumerate(last_resp.sources, 1):
+                icon, bg, fg = _badge_map.get(src.source_type, ("📄", "#F1F5F9", "#334155"))
+                score_pct = int(src.relevance_score * 100)
+                st.markdown(
+                    f"""<div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 10px; padding: 14px 18px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="font-weight: 700; color: #0F172A; font-size: 0.92rem;">Meeting ID: <code>{html.escape(src.meeting_id)}</code></span>
+                                <span style="background: {bg}; color: {fg}; font-size: 0.78rem; font-weight: 600; padding: 2px 8px; border-radius: 6px;">
+                                    {icon} {html.escape(src.source_type)}
+                                </span>
+                            </div>
+                            <span style="color: #16A34A; font-weight: 700; font-size: 0.88rem;">{score_pct}% match</span>
+                        </div>
+                        <div style="color: #334155; font-size: 0.92rem; line-height: 1.55;">
+                            {html.escape(src.content)}
+                        </div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
