@@ -23,6 +23,8 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+from sqlalchemy.orm import joinedload
+
 class MeetingRepository:
     """
     Provides structured read access to all stored meetings.
@@ -46,13 +48,17 @@ class MeetingRepository:
         """
         Returns all stored Meeting rows, ordered by creation date descending.
 
-        Each Meeting row includes lazily loaded relationships for
-        action_items and participants.
+        Eagerly loads action_items and participants so the returned objects
+        remain fully usable after session close.
         """
         session = self._session()
         try:
             return (
                 session.query(Meeting)
+                .options(
+                    joinedload(Meeting.action_items),
+                    joinedload(Meeting.participants),
+                )
                 .order_by(Meeting.created_at.desc())
                 .all()
             )
@@ -63,11 +69,19 @@ class MeetingRepository:
         """
         Returns a single Meeting row by its primary key, or None if not found.
 
-        The returned row has action_items and participants loaded.
+        Eagerly loads action_items and participants.
         """
         session = self._session()
         try:
-            return session.query(Meeting).filter(Meeting.id == meeting_id).first()
+            return (
+                session.query(Meeting)
+                .options(
+                    joinedload(Meeting.action_items),
+                    joinedload(Meeting.participants),
+                )
+                .filter(Meeting.id == meeting_id)
+                .first()
+            )
         finally:
             session.close()
 

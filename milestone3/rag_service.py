@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 # Retry config (mirrors Milestone 2 llm_service pattern)
-_MAX_RETRIES = 3
-_RETRY_DELAYS = (1.0, 2.0, 4.0)
+_MAX_RETRIES = 4
+_RETRY_DELAYS = (1.5, 3.0, 5.0, 8.0)
 
 # Maximum characters per context chunk shown in the RAG prompt
 _MAX_CONTEXT_CHARS_PER_CHUNK = 800

@@ -19,8 +19,8 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Gemini embedding model — supports up to 2048 tokens input per text
-EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-exp-03-07")
+# Gemini embedding model — supports text embedding
+EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 
 # Maximum texts per batch call (Gemini API limit)
 _MAX_BATCH_SIZE = 100
