@@ -81,11 +81,16 @@ def test_process_meeting_end_to_end(temp_sqlite_db):
     mock_resp.text = json.dumps(MOCK_LLM_OUTPUT)
     mock_client.models.generate_content.return_value = mock_resp
 
-    result = process_meeting(
+    saved_id, result = process_meeting(
         transcript=SAMPLE_TRANSCRIPT,
         meeting_id="test-meeting-101",
         db_path=temp_sqlite_db,
         client=mock_client
+    )
+
+    # 0. Verify returned ID matches the one we passed in (Issue #4 regression)
+    assert saved_id == "test-meeting-101", (
+        f"process_meeting must return the exact saved meeting ID. Got: {saved_id}"
     )
 
     # 1. Verify structured result
@@ -122,5 +127,38 @@ def test_process_meeting_end_to_end(temp_sqlite_db):
         assert p_dict["Charlie"] is False
         assert p_dict["Eve"] is True
 
+    finally:
+        session.close()
+
+
+def test_process_meeting_returns_exact_saved_id(temp_sqlite_db):
+    """
+    Regression test for Issue #4: process_meeting must return the exact meeting_id
+    that was persisted to the database, enabling downstream consumers (e.g. the
+    vector store indexer) to use it directly without an additional DB lookup.
+    """
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.text = json.dumps(MOCK_LLM_OUTPUT)
+    mock_client.models.generate_content.return_value = mock_resp
+
+    custom_id = "regression-issue-4-id"
+    saved_id, intel = process_meeting(
+        transcript=SAMPLE_TRANSCRIPT,
+        meeting_id=custom_id,
+        db_path=temp_sqlite_db,
+        client=mock_client,
+    )
+
+    assert saved_id == custom_id, (
+        f"Returned ID '{saved_id}' does not match the persisted ID '{custom_id}'"
+    )
+    assert isinstance(intel, MeetingIntelligence)
+
+    # Verify the row actually exists under that exact ID
+    session = get_session(temp_sqlite_db)
+    try:
+        row = session.query(Meeting).filter_by(id=custom_id).first()
+        assert row is not None, f"No row found in DB for id={custom_id}"
     finally:
         session.close()

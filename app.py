@@ -19,14 +19,10 @@ from typing import Any, Optional
 
 import streamlit as st
 
-# ── Ensure Project Roots in sys.path ──────────────────────────────────────────
-PROJECT_ROOT = Path(r"C:\Users\Dell\.gemini\antigravity\scam caller\project-ai")
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-TASK1_ROOT = Path(r"C:\Users\Dell\project-ai\task-1")
-if str(TASK1_ROOT) not in sys.path:
-    sys.path.insert(0, str(TASK1_ROOT))
+# ── Ensure Project Root in sys.path ───────────────────────────────────────────
+_APP_DIR = Path(__file__).resolve().parent
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
 
 # Milestone 1 Imports
 from accuracy import calculate_wer_and_metrics
@@ -817,10 +813,11 @@ if nav_selection == "Command Center":
 
             # Stage 7: LLM Intelligence
             meeting_intel = None
+            saved_meeting_id = None
             if enable_milestone2 and MILESTONE2_AVAILABLE:
                 with st.spinner("✨ Extracting Meeting Intelligence & Action Items via Gemini…"):
                     try:
-                        meeting_intel = process_meeting(raw_text)
+                        saved_meeting_id, meeting_intel = process_meeting(raw_text)
                         st.success("✅ Intelligence & Action Items extracted successfully")
                     except Exception as exc:
                         logger.warning("LLM extraction note: %s", exc)
@@ -858,17 +855,15 @@ if nav_selection == "Command Center":
                 "reference_text": reference_text,
             }
 
-            # Auto-index into vector store
-            if MILESTONE3_AVAILABLE and meeting_intel:
+            # Auto-index into vector store using the exact saved meeting ID
+            if MILESTONE3_AVAILABLE and meeting_intel and saved_meeting_id:
                 try:
-                    repo = MeetingRepository()
-                    latest = repo.get_all_meetings()
-                    if latest:
-                        idx_res = index_meeting(latest[0].id)
-                        if idx_res.chunks_indexed > 0:
-                            st.toast(f"🔍 Indexed {idx_res.chunks_indexed} chunks into knowledge base", icon="✅")
+                    idx_res = index_meeting(saved_meeting_id)
+                    if idx_res.chunks_indexed > 0:
+                        st.toast(f"🔍 Indexed {idx_res.chunks_indexed} chunks into knowledge base", icon="✅")
                 except Exception as a_err:
                     logger.warning("Auto-indexing notice: %s", a_err)
+
 
             # Auto-save
             if auto_save:

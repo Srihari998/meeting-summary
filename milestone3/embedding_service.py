@@ -81,13 +81,16 @@ class EmbeddingService:
                 "GEMINI_API_KEY environment variable is not set. "
                 "Configure it before using EmbeddingService."
             )
+        # Verify the google-genai package is available at construction time.
         try:
-            from google import genai
-            self._client = genai.Client(api_key=self._api_keys[0])
+            from google import genai as _genai  # noqa: F401
         except ImportError as exc:
             raise EmbeddingError(
                 "google-genai package is required. Run: pip install google-genai"
             ) from exc
+        # NOTE: self._client is intentionally NOT set here.
+        # Production calls use the multi-key failover loop in embed_text/embed_batch.
+        # Unit tests inject _client via EmbeddingService.__new__() + svc._client = mock.
 
     def embed_text(self, text: str) -> List[float]:
         """

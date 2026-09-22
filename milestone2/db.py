@@ -29,9 +29,17 @@ def get_db_url(db_path: Optional[str] = None) -> str:
     return f"sqlite:///{target_path}"
 
 
+# Module-level engine cache keyed by resolved db URL.
+# Engines are heavyweight objects — reusing them avoids connection pool churn.
+_ENGINE_CACHE: dict = {}
+
+
 def get_engine(db_path: Optional[str] = None):
-    """Returns a SQLAlchemy engine configured for SQLite."""
-    return create_engine(get_db_url(db_path), echo=False)
+    """Returns a cached SQLAlchemy engine configured for the given SQLite path."""
+    url = get_db_url(db_path)
+    if url not in _ENGINE_CACHE:
+        _ENGINE_CACHE[url] = create_engine(url, echo=False)
+    return _ENGINE_CACHE[url]
 
 
 def get_session(db_path: Optional[str] = None) -> Session:

@@ -33,7 +33,7 @@ def process_meeting(
     meeting_id: Optional[str] = None,
     db_path: Optional[str] = None,
     client: Optional[genai.Client] = None,
-) -> MeetingIntelligence:
+) -> tuple[str, MeetingIntelligence]:
     """
     End-to-end meeting processing pipeline:
     1. Validates input transcript (rejects empty or near-empty inputs).
@@ -41,7 +41,7 @@ def process_meeting(
     3. Normalizes and deduplicates participants, flagging unknown assignees.
     4. Normalizes action items (priority default 'Medium', status 'Not Started').
     5. Persists meeting, summary, action items, and participants to SQLite database.
-    6. Returns structured MeetingIntelligence record.
+    6. Returns (meeting_id, MeetingIntelligence) so callers have the exact saved ID.
 
     Args:
         transcript: Raw meeting transcript string.
@@ -50,7 +50,7 @@ def process_meeting(
         client: Optional genai.Client instance (useful for testing/mocking).
 
     Returns:
-        MeetingIntelligence: Structured, validated meeting data.
+        Tuple[str, MeetingIntelligence]: (saved_meeting_id, structured meeting data).
 
     Raises:
         InvalidInputError: If transcript is empty or near-empty.
@@ -96,5 +96,5 @@ def process_meeting(
     )
     logger.info(f"Meeting record successfully saved with ID: {saved_id}")
 
-    # 5. Return Structured Result
-    return cleaned_intelligence
+    # 5. Return (saved_id, Structured Result)
+    return saved_id, cleaned_intelligence

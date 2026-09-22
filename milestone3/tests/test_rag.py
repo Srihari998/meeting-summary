@@ -137,3 +137,37 @@ class TestRAGServiceAnswer:
         with patch("milestone3.rag_service.time.sleep"):
             with pytest.raises(RAGError, match="RAG LLM call failed"):
                 svc.answer(RAGRequest(question="test"))
+
+
+class TestRAGServiceFailover:
+    def test_failover_to_second_key_when_first_fails(self):
+        """When key-1 raises on every attempt, _call_llm should try key-2 and succeed."""
+        good_resp = MagicMock()
+        good_resp.text = "Failover answer."
+
+        def client_factory(api_key):
+            mock = MagicMock()
+            if api_key == "key-1":
+                mock.models.generate_content.side_effect = RuntimeError("key-1 quota exceeded")
+            else:
+                mock.models.generate_content.return_value = good_resp
+            return mock
+
+        svc = RAGService.__new__(RAGService)
+        svc._search_svc = _make_mock_search_svc()
+        svc._model = "gemini-3.6-flash"
+        svc._api_keys = ["key-1", "key-2"]
+        svc._prompt_template = "CONTEXT:\n{context}\n\nQUESTION:\n{question}\n\nANSWER:"
+        # No _client set — forces the key-loop path in _call_llm
+
+        with patch("google.genai.Client") as mock_client_cls, \
+             patch("milestone3.rag_service.time.sleep"):
+            mock_client_cls.side_effect = client_factory
+            resp = svc.answer(RAGRequest(question="failover test"))
+
+        assert resp.answer == "Failover answer."
+        keys_used = [c.kwargs["api_key"] for c in mock_client_cls.call_args_list]
+        assert "key-1" in keys_used
+        assert "key-2" in keys_used
+
+

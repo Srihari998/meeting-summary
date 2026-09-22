@@ -101,7 +101,7 @@ class TestMilestone3EndToEndPipeline:
         # STAGE 1: Process Meeting & Persist to Relational DB (Milestone 2)
         # ----------------------------------------------------------------------
         with patch("milestone2.pipeline.extract_meeting_intelligence", return_value=mock_llm_intelligence):
-            intel = process_meeting(raw_transcript, meeting_id=meeting_id, db_path=db_file)
+            saved_id, intel = process_meeting(raw_transcript, meeting_id=meeting_id, db_path=db_file)
             assert intel is not None
             assert "MySQL to PostgreSQL" in intel.summary
 

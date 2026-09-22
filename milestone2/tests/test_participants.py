@@ -58,3 +58,39 @@ def test_unknown_assignee_flagged_not_dropped():
     alice_records = [r for r in participant_records if r["name"] == "Alice"]
     assert len(alice_records) == 1
     assert alice_records[0]["is_unknown_assignee"] is False
+
+
+def test_infer_speaker_roles_returns_different_roles_per_speaker():
+    """
+    Regression test for Issue #1 — heuristic role detection must check each
+    speaker's OWN text, not the whole transcript.
+
+    If 'manager' appears only in Alice's utterances and 'developer' only in
+    Bob's, they must receive different roles (not both 'Project Manager').
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from participants import infer_speaker_roles
+
+    transcript = (
+        "Alice: I am the project manager and I will coordinate the sprints.\n"
+        "Bob: I will handle the database migrations as a backend developer.\n"
+    )
+    # LLM unavailable — force heuristic fallback by passing a dummy client that raises
+    from unittest.mock import MagicMock
+    bad_client = MagicMock()
+    bad_client.models.generate_content.side_effect = RuntimeError("no LLM")
+
+    roles = infer_speaker_roles(transcript, speakers=["Alice", "Bob"], client=bad_client)
+
+    assert "Alice" in roles
+    assert "Bob" in roles
+    # Alice mentioned 'manager' only → Project Manager
+    assert roles["Alice"] == "Project Manager", f"Expected Project Manager, got {roles['Alice']}"
+    # Bob mentioned 'developer'/'database' only → Software Engineer
+    assert roles["Bob"] == "Software Engineer", f"Expected Software Engineer, got {roles['Bob']}"
+    # Critical: they must NOT be the same role
+    assert roles["Alice"] != roles["Bob"], (
+        "Bug regression: both speakers got the same role — heuristic is still using full transcript text"
+    )

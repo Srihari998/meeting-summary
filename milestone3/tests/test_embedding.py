@@ -50,9 +50,47 @@ class TestEmbeddingServiceInit:
                 EmbeddingService(api_key=None)
 
     def test_initializes_with_explicit_key(self):
-        with patch("google.genai.Client") as mock_cls:
+        """EmbeddingService stores the supplied key in _api_keys (no eager Client creation)."""
+        with patch("google.genai.Client"):
             svc = EmbeddingService(api_key="fake-key")
-            mock_cls.assert_called_once_with(api_key="fake-key")
+            assert svc._api_keys == ["fake-key"]
+            assert not hasattr(svc, "_client"), (
+                "_client must NOT be set at init — production uses the failover loop"
+            )
+
+    def test_failover_to_second_key_when_first_fails(self):
+        """When key-1 raises on every attempt, the service should try key-2 and succeed."""
+        from unittest.mock import call
+
+        good_emb = MagicMock()
+        good_emb.values = [0.9, 0.8]
+        good_resp = MagicMock()
+        good_resp.embeddings = [good_emb]
+
+        call_count = {"n": 0}
+
+        def client_factory(api_key):
+            mock = MagicMock()
+            if api_key == "key-1":
+                mock.models.embed_content.side_effect = RuntimeError("key-1 quota exceeded")
+            else:
+                mock.models.embed_content.return_value = good_resp
+            return mock
+
+        svc = EmbeddingService.__new__(EmbeddingService)
+        svc._model = "test-model"
+        svc._api_keys = ["key-1", "key-2"]
+
+        with patch("google.genai.Client") as mock_client_cls, \
+             patch("milestone3.embedding_service.time.sleep"):
+            mock_client_cls.side_effect = client_factory
+            result = svc.embed_text("hello failover")
+
+        assert result == pytest.approx([0.9, 0.8])
+        # genai.Client must have been called with both keys
+        keys_used = [c.kwargs["api_key"] for c in mock_client_cls.call_args_list]
+        assert "key-1" in keys_used
+        assert "key-2" in keys_used
 
 
 class TestEmbedText:

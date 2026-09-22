@@ -92,13 +92,16 @@ class RAGService:
                 "GEMINI_API_KEY environment variable is not set. "
                 "Configure it before using RAGService."
             )
+        # Verify the google-genai package is available at construction time.
         try:
-            from google import genai
-            self._client = genai.Client(api_key=self._api_keys[0])
+            from google import genai as _genai  # noqa: F401
         except ImportError as exc:
             raise RAGError(
                 "google-genai package is required. Run: pip install google-genai"
             ) from exc
+        # NOTE: self._client is intentionally NOT set here.
+        # Production calls use the multi-key failover loop in _call_llm.
+        # Unit tests inject _client via RAGService.__new__() + svc._client = mock.
 
         # Load and cache the RAG prompt template
         prompt_path = _PROMPTS_DIR / "rag_prompt.txt"

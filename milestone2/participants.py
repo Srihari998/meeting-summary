@@ -132,7 +132,6 @@ def reconcile_participants_and_assignees(
 
         if not matches:
             # Flag as Unknown assignee without dropping
-            flagged_name = f"{norm_assignee} (Unknown)"
             if norm_assignee_lower not in participant_lower_set:
                 canonical_participants.append(norm_assignee)
                 participant_lower_set.add(norm_assignee_lower)
@@ -202,19 +201,30 @@ def infer_speaker_roles(
     except Exception:
         pass
 
-    # 2. Heuristic fallback based on context keywords
-    text_lower = transcript.lower()
+    # 2. Heuristic fallback based on per-speaker context keywords
+    import re as _re
+    # Build a mapping from speaker name → their own spoken text
+    speaker_text_map: dict[str, str] = {}
     for spk in candidate_speakers:
-        spk_lower = spk.lower()
-        if "manager" in text_lower or "pm" in text_lower:
+        # Collect lines attributed to this speaker: "SpeakerName: ..." patterns
+        pattern = _re.compile(
+            r"(?:^|\n)\s*" + _re.escape(spk) + r"\s*:\s*(.+?)(?=(?:\n\s*\S+\s*:)|\Z)",
+            _re.IGNORECASE | _re.DOTALL,
+        )
+        matches_spk = pattern.findall(transcript)
+        speaker_text_map[spk] = " ".join(matches_spk).lower() if matches_spk else ""
+
+    for spk in candidate_speakers:
+        spk_text = speaker_text_map.get(spk, "")
+        if "manager" in spk_text or "pm" in spk_text:
             detected_roles[spk] = "Project Manager"
-        elif "lead" in text_lower or "leader" in text_lower:
+        elif "lead" in spk_text or "leader" in spk_text:
             detected_roles[spk] = "Team Leader"
-        elif "design" in text_lower or "casing" in text_lower or "cad" in text_lower:
+        elif "design" in spk_text or "casing" in spk_text or "cad" in spk_text:
             detected_roles[spk] = "Product Designer"
-        elif "developer" in text_lower or "database" in text_lower or "frontend" in text_lower:
+        elif "developer" in spk_text or "database" in spk_text or "frontend" in spk_text:
             detected_roles[spk] = "Software Engineer"
-        elif "marketing" in text_lower or "sales" in text_lower:
+        elif "marketing" in spk_text or "sales" in spk_text:
             detected_roles[spk] = "Marketing Specialist"
         else:
             detected_roles[spk] = "Team Member / Coworker"
