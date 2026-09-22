@@ -164,6 +164,7 @@ class VectorStoreService:
         query_embedding: List[float],
         top_k: int = 5,
         source_type_filter: Optional[str] = None,
+        meeting_id_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Finds the top-k most similar chunks to a query embedding.
@@ -172,6 +173,7 @@ class VectorStoreService:
             query_embedding:    Dense float vector of the query.
             top_k:              Maximum number of results.
             source_type_filter: Optional filter by source_type.
+            meeting_id_filter:  Optional filter by meeting_id.
 
         Returns:
             List of dicts, each containing:
@@ -179,9 +181,17 @@ class VectorStoreService:
                 - distance (ChromaDB cosine distance; relevance = 1 - distance)
         """
         try:
-            where_filter: Optional[Dict[str, Any]] = None
+            where_conditions = []
             if source_type_filter:
-                where_filter = {"source_type": source_type_filter}
+                where_conditions.append({"source_type": source_type_filter})
+            if meeting_id_filter:
+                where_conditions.append({"meeting_id": meeting_id_filter})
+
+            where_filter: Optional[Dict[str, Any]] = None
+            if len(where_conditions) == 1:
+                where_filter = where_conditions[0]
+            elif len(where_conditions) > 1:
+                where_filter = {"$and": where_conditions}
 
             query_kwargs: Dict[str, Any] = {
                 "query_embeddings": [query_embedding],

@@ -72,10 +72,12 @@ class SemanticSearchService:
         query_embedding = self._embedder.embed_text(request.query)
 
         # 2. Similarity search
+        meeting_id_filter = getattr(request, "meeting_id", None)
         raw_results = self._vstore.similarity_search(
             query_embedding=query_embedding,
             top_k=request.top_k,
             source_type_filter=request.source_type,
+            meeting_id_filter=meeting_id_filter,
         )
 
         elapsed_ms = (time.perf_counter() - t_start) * 1000.0
@@ -101,6 +103,42 @@ class SemanticSearchService:
                     search_latency_ms=elapsed_ms,
                 )
             )
+
+        # 4. Apply date filtering if requested
+        date_from = getattr(request, "date_from", None)
+        date_to = getattr(request, "date_to", None)
+        if date_from or date_to:
+            from datetime import datetime, timezone
+            try:
+                from milestone3.meeting_repository import MeetingRepository
+            except ImportError:
+                from meeting_repository import MeetingRepository  # type: ignore
+
+            repo = MeetingRepository()
+            filtered: List[SearchResult] = []
+            for res in search_results:
+                m = repo.get_meeting_by_id(res.meeting_id)
+                if m and m.created_at:
+                    m_date = m.created_at
+                    # Normalize naive / aware
+                    if date_from:
+                        df = datetime.fromisoformat(date_from)
+                        if df.tzinfo and not m_date.tzinfo:
+                            m_date = m_date.replace(tzinfo=timezone.utc)
+                        elif not df.tzinfo and m_date.tzinfo:
+                            df = df.replace(tzinfo=timezone.utc)
+                        if m_date < df:
+                            continue
+                    if date_to:
+                        dt = datetime.fromisoformat(date_to)
+                        if dt.tzinfo and not m_date.tzinfo:
+                            m_date = m_date.replace(tzinfo=timezone.utc)
+                        elif not dt.tzinfo and m_date.tzinfo:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        if m_date > dt:
+                            continue
+                filtered.append(res)
+            search_results = filtered
 
         # Sort by relevance descending (ChromaDB should already return sorted, but enforce)
         search_results.sort(key=lambda r: r.relevance_score, reverse=True)
